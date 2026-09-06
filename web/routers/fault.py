@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """web/routers/fault.py — 故障定位API（接入 core 层真实引擎）"""
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
 
@@ -9,8 +9,14 @@ from core.fault_locator import locate_fault
 from core.data_loader import load_history_events
 from core.models import FaultLocateRequest, HistoryEvent
 from core import db as _db
+from core.electrical_inference import (
+    ingest_production_monitoring_file,
+    reproduce_monitoring_event,
+    seed_sample_monitoring_data_if_empty,
+)
 
 router = APIRouter()
+
 
 
 # ── 请求/响应模型 ──────────────────────────────────────────────
@@ -123,3 +129,90 @@ async def get_history_event(event_id: str):
     if not matched:
         raise HTTPException(404, f"事件不存在: {event_id}")
     return {"events": [e.model_dump() for e in matched]}
+
+
+# ════════════════════════════════════════════════
+# 生产级监测数据管理与自动复现定位
+# ════════════════════════════════════════════════
+
+@router.post("/monitoring/upload")
+async def upload_monitoring_data_api(
+    file: UploadFile = File(...),
+    topology_id: Optional[str] = Form(None),
+):
+    """
+    上传生产级监测数据（.xlsx / .xls / .csv），解析10大核心字段并分组落库。
+    可指定关联拓扑，若不指定则根据监测点名称自动关联拓扑。
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "上传的文件内容为空")
+    try:
+        res = ingest_production_monitoring_file(content, file.filename or "data.xlsx", topology_id)
+        return res
+    except Exception as e:
+        raise HTTPException(400, f"监测数据解析失败: {e}")
+
+
+@router.get("/monitoring/events")
+async def list_monitoring_events_api(topology_id: Optional[str] = None):
+    """获取所有监测事件列表（包含时间戳、监测点数量、故障简述、自动识别的报警点）"""
+    events = _db.list_monitoring_events(topology_id)
+    return {"total": len(events), "events": events}
+
+
+@router.get("/monitoring/events/{event_id}")
+async def get_monitoring_event_details_api(event_id: str):
+    """获取单次监测事件的详细信息及所属的全部10列标准监测数据记录"""
+    event = _db.get_monitoring_event(event_id)
+    if not event:
+        raise HTTPException(404, f"事件不存在: {event_id}")
+    records = _db.get_monitoring_records(event_id)
+    return {"event": event, "records": records}
+
+
+@router.post("/monitoring/events/{event_id}/reproduce")
+async def reproduce_monitoring_event_api(event_id: str):
+    """
+    根据事件ID执行一键复现定位：
+    自动提取该事件判定出的报警监测点，自动调用拓扑矩阵法完成区段定位，
+    并将定位结果持久化到历史故障事件库中（带实时标签）。
+    """
+    try:
+        res = reproduce_monitoring_event(event_id)
+        fl = res.get("fault_locate")
+        if fl and fl.get("alarmed_node_ids"):
+            cand_str = " / ".join(
+                s.get("to_pole") if s.get("to_pole") != "(末端)" else "(无)"
+                for s in fl.get("candidate_sections", [])
+            ) or "(无)"
+            _db.insert_event(HistoryEvent(
+                event_id=fl.get("event_id", f"rep_{event_id}"),
+                line=res["topology_id"],
+                time=res["timestamp"] or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                fault_types=res.get("fault_summary", ""),
+                alarmed_points=", ".join(res.get("inferred_poles", [])),
+                frontier=" / ".join(fl.get("frontier_points", [])),
+                candidate_sections=cand_str,
+                confidence=fl.get("confidence", "medium"),
+                note=fl.get("note", "根据监测数据自动研判复现"),
+                source="live",
+            ))
+        return res
+    except Exception as e:
+        raise HTTPException(400, f"复现定位失败: {e}")
+
+
+@router.post("/monitoring/seed-sample")
+async def seed_sample_monitoring_data_api():
+    """从本地样例数据（data/历史数据/异常数据.xlsx）一键载入15条真实故障监测记录"""
+    res = seed_sample_monitoring_data_if_empty()
+    return res
+
+
+@router.delete("/monitoring/clear")
+async def clear_monitoring_data_api(topology_id: Optional[str] = None):
+    """清空监测数据记录"""
+    _db.clear_monitoring_records(topology_id)
+    return {"ok": True}
+

@@ -263,6 +263,47 @@ class LLMTestResponse(BaseModel):
     model: str
 
 
+# ════════════════════════════════════════════════
+# 生产级监测数据模型（10列展示与事件管理）
+# ════════════════════════════════════════════════
+
+class MonitoringRecord(BaseModel):
+    id: Optional[int] = None
+    event_id: str
+    topology_id: str
+    record_no: int
+    node_id: str
+    node_name: str
+    device_type: str = "配电线路"
+    terminal_status: str = "正常"
+    line_status: str = "正常"
+    warning_status: str = "正常"
+    ua: Optional[float] = None
+    ub: Optional[float] = None
+    uc: Optional[float] = None
+    ia: Optional[float] = None
+    ib: Optional[float] = None
+    ic: Optional[float] = None
+    phase_a: Optional[float] = None
+    phase_b: Optional[float] = None
+    phase_c: Optional[float] = None
+    measure_time: str
+    is_abnormal: bool = False
+    abnormal_reason: str = ""
+
+
+class MonitoringEventMeta(BaseModel):
+    event_id: str
+    topology_id: str
+    topology_name: str = ""
+    timestamp: str
+    record_count: int = 0
+    abnormal_count: int = 0
+    fault_summary: str = ""
+    inferred_poles: str = ""
+    created_at: str = ""
+
+
 # FaultLocateResponse 引用了下面才定义的 EventElectricalAnalysis，InferResult 引用了
 # 上面的 FaultLocateResponse（字符串前向引用，配合文件头部 from __future__ import
 # annotations）；显式 rebuild 确保引用关系被正确解析。

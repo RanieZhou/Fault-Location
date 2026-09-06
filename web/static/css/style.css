@@ -914,6 +914,43 @@ select.input {
   align-items: center;
   flex-shrink: 0;
 }
+.history-sub-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px 8px;
+  flex-shrink: 0;
+}
+.history-sub-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.history-sub-tab.active {
+  background: var(--cyan-dim);
+  border-color: var(--cyan);
+  color: var(--cyan);
+  font-weight: 600;
+}
+.cell-abnormal {
+  color: var(--red) !important;
+  font-weight: 600;
+}
+.cell-warning {
+  color: var(--amber) !important;
+  font-weight: 600;
+}
+.row-abnormal {
+  background: rgba(239, 68, 68, 0.05);
+}
 .history-table-wrap {
   flex: 1;
   overflow: auto;

@@ -54,8 +54,8 @@ function normalizeBackendFaultResult(backendResult) {
 
   return {
     event_id: backendResult.event_id,
-    line_code: backendResult.line_code,
-    alarm_poles: backendResult.alarm_poles,
+    line_code: backendResult.line_code || backendResult.line,
+    alarm_poles: backendResult.alarm_poles || backendResult.alarm_points || [],
     alarm_ids: backendResult.alarmed_node_ids || [],
     results,
     not_found: [],
@@ -63,6 +63,8 @@ function normalizeBackendFaultResult(backendResult) {
     electrical_analysis: backendResult.electrical_analysis || null,
   };
 }
+window.normalizeBackendFaultResult = normalizeBackendFaultResult;
+
 
 window.apiFaultLocate = async function(lineCode, alarmPoles, faultType, eventTime) {
   if (!_backendAvailable) return { error: '后端服务未启动，无法定位' };
@@ -281,6 +283,81 @@ window.apiInferFaultFromEvent = async function(topoId, eventId) {
   if (!r.ok) return { ok: false, note: data.detail || '推理失败' };
   return data;
 };
+
+// ======================== 生产级监测数据 API ========================
+
+window.apiUploadMonitoringData = async function(file, topologyId) {
+  const form = new FormData();
+  form.append('file', file);
+  if (topologyId) form.append('topology_id', topologyId);
+  try {
+    const r = await fetch(`${API_BASE}/api/fault/monitoring/upload`, { method: 'POST', body: form });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, error: data.detail || '上传解析失败' };
+    return data;
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
+window.apiListMonitoringEvents = async function(topologyId) {
+  try {
+    let url = `${API_BASE}/api/fault/monitoring/events`;
+    if (topologyId) url += `?topology_id=${encodeURIComponent(topologyId)}`;
+    const r = await fetch(url);
+    if (!r.ok) return [];
+    const data = await r.json().catch(() => ({ events: [] }));
+    return data.events || [];
+  } catch {
+    return [];
+  }
+};
+
+window.apiGetMonitoringEventDetails = async function(eventId) {
+  try {
+    const r = await fetch(`${API_BASE}/api/fault/monitoring/events/${encodeURIComponent(eventId)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+};
+
+window.apiReproduceMonitoringEvent = async function(eventId) {
+  try {
+    const r = await fetch(`${API_BASE}/api/fault/monitoring/events/${encodeURIComponent(eventId)}/reproduce`, { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, error: data.detail || '复现失败' };
+    // 归一化后端定位结果结构
+    if (data.fault_locate) {
+      data.normalized_locate = normalizeBackendFaultResult(data.fault_locate);
+    }
+    return data;
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
+window.apiSeedSampleMonitoringData = async function() {
+  try {
+    const r = await fetch(`${API_BASE}/api/fault/monitoring/seed-sample`, { method: 'POST' });
+    return await r.json();
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+};
+
+window.apiClearMonitoringData = async function(topologyId) {
+  try {
+    let url = `${API_BASE}/api/fault/monitoring/clear`;
+    if (topologyId) url += `?topology_id=${encodeURIComponent(topologyId)}`;
+    const r = await fetch(url, { method: 'DELETE' });
+    return await r.json();
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
 
 // 把自定义拓扑的"折叠后监测点视图"转换成前端渲染统一形状——这是算法实际使用的
 // 简化树（跳过了所有非监测点的结构杆塔），只适合用在"只关心监测点"的场景：

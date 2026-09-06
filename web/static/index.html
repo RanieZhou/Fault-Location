@@ -437,31 +437,97 @@
         </div>
       </div>
 
-      <!-- ============ 视图4：历史事件 ============ -->
+      <!-- ============ 视图4：历史事件与监测数据 ============ -->
       <div class="view" id="view-history">
         <div style="padding:16px;flex-shrink:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <div>
-            <h2 style="font-size:16px;font-weight:700;color:var(--text-primary)">
-              <i class="bi bi-table" style="color:var(--cyan);margin-right:6px"></i>历史故障事件
+            <h2 style="font-size:16px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:8px">
+              <i class="bi bi-table" style="color:var(--cyan)"></i>监测数据与历史事件
             </h2>
-            <p style="font-size:12px;color:var(--text-muted)">
-              共 <span id="history-total">0</span> 次故障记录（<span id="history-line-breakdown"></span>）
+            <p style="font-size:12px;color:var(--text-muted);margin-top:2px">
+              生产级10列标准监测数据 · 选择异常记录一键复现并自动填充报警监测点
             </p>
           </div>
           <div style="flex:1"></div>
-          <select class="input" style="width:150px" id="history-line-filter" onchange="filterHistory()">
+          <input type="file" id="monitoring-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleMonitoringUpload(this)">
+          <button class="btn btn-secondary" onclick="document.getElementById('monitoring-file-input').click()" title="上传包含三相电压、电流、状态的原始监测表格">
+            <i class="bi bi-cloud-upload"></i> 上传监测数据
+          </button>
+          <button class="btn btn-secondary" onclick="seedSampleMonitoringData()" id="btn-seed-sample" title="直接导入系统自带的15条历史异常数据">
+            <i class="bi bi-file-earmark-spreadsheet"></i> 载入样例数据
+          </button>
+          <select class="input" style="width:140px" id="monitoring-topo-filter" onchange="onMonitoringTopoChange()">
             <option value="">全部拓扑</option>
           </select>
-          <select class="input" style="width:130px" id="history-type-filter" onchange="filterHistory()">
-            <option value="">全部类型</option>
-            <option value="短路:A">A相</option>
-            <option value="短路:B">B相</option>
-            <option value="短路: C">C相</option>
-          </select>
-          <input class="input" style="width:200px" placeholder="搜索..." id="history-search" oninput="filterHistory()" autocomplete="off">
+          <input class="input" style="width:180px" placeholder="搜索监测点/状态..." id="monitoring-search" oninput="filterMonitoringView()" autocomplete="off">
         </div>
 
-        <div style="padding:0 16px 16px;flex:1;overflow:auto">
+        <!-- 页面子选项卡 -->
+        <div class="history-sub-tabs">
+          <button class="history-sub-tab active" id="tab-btn-monitoring" onclick="switchHistoryTab('monitoring')">
+            <i class="bi bi-activity"></i> 监测数据记录 (10列标准展示)
+          </button>
+          <button class="history-sub-tab" id="tab-btn-faults" onclick="switchHistoryTab('faults')">
+            <i class="bi bi-clock-history"></i> 故障定位历史记录 (<span id="history-total">0</span>)
+          </button>
+        </div>
+
+        <!-- 子视图1：10列标准监测数据记录与复现 -->
+        <div id="subview-monitoring" style="padding:12px 16px 16px;flex:1;display:flex;flex-direction:column;gap:10px;overflow:hidden;min-height:0">
+          <!-- 事件快照切换卡片 -->
+          <div style="display:flex;align-items:center;gap:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;flex-shrink:0;flex-wrap:wrap">
+            <div style="font-size:12px;color:var(--text-muted);white-space:nowrap;display:flex;align-items:center;gap:6px">
+              <i class="bi bi-calendar-event" style="color:var(--cyan)"></i> 选择故障事件批次：
+            </div>
+            <select class="input" style="flex:1;min-width:320px;max-width:560px" id="monitoring-event-select" onchange="onSelectMonitoringEvent(this.value)">
+              <option value="">加载中...</option>
+            </select>
+            <div id="event-inferred-badge" style="font-size:12px;color:var(--text-secondary)"></div>
+            <div style="flex:1"></div>
+            <button class="btn btn-primary" id="btn-reproduce-current" onclick="reproduceSelectedMonitoringEvent()" style="white-space:nowrap">
+              <i class="bi bi-play-circle"></i> 复现该事件定位 →
+            </button>
+          </div>
+
+          <!-- 10列数据表格 -->
+          <div class="history-table-wrap" style="flex:1;min-height:0">
+            <table class="data-table" id="table-monitoring-records">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>监测点名称</th>
+                  <th>设备类型</th>
+                  <th>终端状态</th>
+                  <th>线路状态</th>
+                  <th>预警状态</th>
+                  <th>三相电压 (kV)</th>
+                  <th>三相电流 (A)</th>
+                  <th>三相相位 (°)</th>
+                  <th>量测时间</th>
+                  <th style="width:100px;text-align:center">操作</th>
+                </tr>
+              </thead>
+              <tbody id="monitoring-records-tbody">
+                <tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted)">正在加载监测数据...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 子视图2：故障定位历史记录 -->
+        <div id="subview-faults" style="padding:12px 16px 16px;flex:1;overflow:auto;display:none">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+            <select class="input" style="width:150px" id="history-line-filter" onchange="filterHistory()">
+              <option value="">全部拓扑</option>
+            </select>
+            <select class="input" style="width:130px" id="history-type-filter" onchange="filterHistory()">
+              <option value="">全部类型</option>
+              <option value="短路:A">A相</option>
+              <option value="短路:B">B相</option>
+              <option value="短路: C">C相</option>
+            </select>
+            <input class="input" style="width:220px" placeholder="搜索故障事件/报警点/候选区段..." id="history-search" oninput="filterHistory()" autocomplete="off">
+          </div>
           <div class="history-table-wrap">
             <table class="data-table">
               <thead>

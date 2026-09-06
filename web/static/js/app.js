@@ -28,18 +28,24 @@ window.navTo = function(viewId) {
   // 视图切换时的初始化
   if (viewId === 'history') {
     refreshTopoNameCache().then(() => {
-      const sel = document.getElementById('history-line-filter');
-      if (sel) {
-        const cur = sel.value;
-        [...sel.querySelectorAll('option[data-topo]')].forEach(o => o.remove());
-        Object.entries(window._topoNameCache).forEach(([id, name]) => {
-          const opt = document.createElement('option');
-          opt.value = id; opt.dataset.topo = '1'; opt.textContent = name;
-          sel.appendChild(opt);
-        });
-        sel.value = cur;
+      ['history-line-filter', 'monitoring-topo-filter'].forEach(selId => {
+        const sel = document.getElementById(selId);
+        if (sel) {
+          const cur = sel.value;
+          [...sel.querySelectorAll('option[data-topo]')].forEach(o => o.remove());
+          Object.entries(window._topoNameCache).forEach(([id, name]) => {
+            const opt = document.createElement('option');
+            opt.value = id; opt.dataset.topo = '1'; opt.textContent = name;
+            sel.appendChild(opt);
+          });
+          sel.value = cur;
+        }
+      });
+      if (window._currentHistoryTab === 'faults') {
+        renderHistoryTable();
+      } else {
+        loadMonitoringEvents();
       }
-      renderHistoryTable();
     });
   }
   if (viewId === 'topology') {
@@ -632,6 +638,275 @@ window.replayHistoryEvent = function(eventId) {
   window.replayEvent(eventId);
 };
 
+// ======================== 生产级监测数据管理与自动复现 ========================
+
+window._currentHistoryTab = 'monitoring';
+window._monitoringEvents = [];
+window._currentMonitoringEvent = null;
+window._currentMonitoringRecords = [];
+
+window.switchHistoryTab = function(tab) {
+  window._currentHistoryTab = tab;
+  const btnMon = document.getElementById('tab-btn-monitoring');
+  const btnFaults = document.getElementById('tab-btn-faults');
+  const subMon = document.getElementById('subview-monitoring');
+  const subFaults = document.getElementById('subview-faults');
+
+  if (tab === 'monitoring') {
+    if (btnMon) btnMon.classList.add('active');
+    if (btnFaults) btnFaults.classList.remove('active');
+    if (subMon) subMon.style.display = 'flex';
+    if (subFaults) subFaults.style.display = 'none';
+    loadMonitoringEvents();
+  } else {
+    if (btnMon) btnMon.classList.remove('active');
+    if (btnFaults) btnFaults.classList.add('active');
+    if (subMon) subMon.style.display = 'none';
+    if (subFaults) subFaults.style.display = 'block';
+    renderHistoryTable();
+  }
+};
+
+window.loadMonitoringEvents = async function(preserveEventId = null) {
+  const topoFilter = document.getElementById('monitoring-topo-filter')?.value || '';
+  const events = await window.apiListMonitoringEvents(topoFilter);
+  window._monitoringEvents = events || [];
+
+  const select = document.getElementById('monitoring-event-select');
+  if (!select) return;
+
+  if (window._monitoringEvents.length === 0) {
+    select.innerHTML = '<option value="">暂无监测事件记录，请先上传监测数据或载入样例</option>';
+    const badgeEl = document.getElementById('event-inferred-badge');
+    if (badgeEl) badgeEl.innerHTML = '';
+    renderMonitoringRecords([]);
+    return;
+  }
+
+  select.innerHTML = window._monitoringEvents.map(e => {
+    const topoLabel = window._topoNameCache[e.topology_id] || e.topology_name || e.topology_id;
+    const isAbn = e.abnormal_count > 0 ? `⚠️异常:${e.abnormal_count}` : '正常';
+    return `<option value="${escapeHtml(e.event_id)}">${escapeHtml(e.timestamp)} · [${escapeHtml(topoLabel)}] 监测点:${e.record_count} ${isAbn} (${escapeHtml(e.fault_summary || '正常工况')})</option>`;
+  }).join('');
+
+  let targetId = preserveEventId;
+  if (!targetId || !window._monitoringEvents.some(e => e.event_id === targetId)) {
+    targetId = window._monitoringEvents[0].event_id;
+  }
+  select.value = targetId;
+  await window.onSelectMonitoringEvent(targetId);
+};
+
+window.onSelectMonitoringEvent = async function(eventId) {
+  if (!eventId) return;
+  const badgeEl = document.getElementById('event-inferred-badge');
+  const details = await window.apiGetMonitoringEventDetails(eventId);
+  if (!details || !details.event) {
+    if (badgeEl) badgeEl.innerHTML = '';
+    renderMonitoringRecords([]);
+    return;
+  }
+
+  window._currentMonitoringEvent = details.event;
+  window._currentMonitoringRecords = details.records || [];
+
+  if (badgeEl) {
+    const inferred = details.event.inferred_poles ? details.event.inferred_poles.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const inferredHtml = inferred.length > 0
+      ? inferred.map(p => `<span class="badge badge-red" style="margin-right:3px">${escapeHtml(p)}</span>`).join('')
+      : '<span class="badge badge-grey">无明显报警点</span>';
+    const summaryHtml = details.event.fault_summary ? `<span class="badge badge-amber" style="margin-left:6px">${escapeHtml(details.event.fault_summary)}</span>` : '';
+    badgeEl.innerHTML = `<span style="color:var(--text-muted);font-size:12px">自动判定报警点:</span> ${inferredHtml}${summaryHtml}`;
+  }
+
+  renderMonitoringRecords(window._currentMonitoringRecords);
+};
+
+function renderMonitoringRecords(records) {
+  const tbody = document.getElementById('monitoring-records-tbody');
+  if (!tbody) return;
+
+  const keyword = document.getElementById('monitoring-search')?.value?.trim().toLowerCase() || '';
+  let filtered = records;
+  if (keyword) {
+    filtered = records.filter(r =>
+      (r.node_name || '').toLowerCase().includes(keyword) ||
+      (r.node_id || '').toLowerCase().includes(keyword) ||
+      (r.device_type || '').toLowerCase().includes(keyword) ||
+      (r.terminal_status || '').toLowerCase().includes(keyword) ||
+      (r.line_status || '').toLowerCase().includes(keyword) ||
+      (r.warning_status || '').toLowerCase().includes(keyword) ||
+      (r.abnormal_reason || '').toLowerCase().includes(keyword)
+    );
+  }
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted)">未找到匹配的监测记录</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(r => {
+    const isAbnormal = !!r.is_abnormal;
+    const rowClass = isAbnormal ? 'row-abnormal' : '';
+
+    // 线路状态标签
+    let lineBadgeClass = 'badge-grey';
+    if (r.line_status && r.line_status !== '正常') {
+      lineBadgeClass = r.line_status.includes('短路') || r.line_status.includes('接地') || r.line_status.includes('故障') ? 'badge-red' : 'badge-amber';
+    } else if (r.line_status === '正常') {
+      lineBadgeClass = 'badge-green';
+    }
+
+    // 终端状态标签
+    let termBadgeClass = r.terminal_status === '正常' ? 'badge-green' : 'badge-amber';
+
+    // 预警状态标签
+    let warnBadgeClass = 'badge-grey';
+    if (r.warning_status && r.warning_status !== '正常' && r.warning_status !== '-' && r.warning_status !== '---') {
+      warnBadgeClass = 'badge-amber';
+    }
+
+    // 电压格式化（低于0.5kV标红）
+    const fmtVolt = (val) => {
+      if (val == null) return '<span style="color:var(--text-muted)">-</span>';
+      const isLow = val <= 0.5;
+      return `<span style="${isLow ? 'color:var(--red);font-weight:700' : ''}">${Number(val).toFixed(2)}</span>`;
+    };
+    const voltHtml = `A:${fmtVolt(r.ua)} B:${fmtVolt(r.ub)} C:${fmtVolt(r.uc)}`;
+
+    // 电流格式化
+    const fmtCur = (val) => val == null ? '<span style="color:var(--text-muted)">-</span>' : Number(val).toFixed(1);
+    const curHtml = `A:${fmtCur(r.ia)} B:${fmtCur(r.ib)} C:${fmtCur(r.ic)}`;
+
+    // 相位格式化
+    const fmtPhase = (val) => val == null ? '<span style="color:var(--text-muted)">-</span>' : `${Number(val).toFixed(0)}°`;
+    const phaseHtml = `A:${fmtPhase(r.phase_a)} B:${fmtPhase(r.phase_b)} C:${fmtPhase(r.phase_c)}`;
+
+    const nodeBadge = isAbnormal
+      ? `<span class="badge badge-red" style="font-size:10px;margin-left:4px">异常</span>`
+      : '';
+
+    return `<tr class="${rowClass}">
+      <td style="color:var(--text-muted);text-align:center">${r.record_no || r.id}</td>
+      <td style="font-weight:600">
+        ${escapeHtml(r.node_name)}
+        ${nodeBadge}
+        ${r.abnormal_reason ? `<div style="font-size:11px;color:var(--red);font-weight:normal;margin-top:2px">${escapeHtml(r.abnormal_reason)}</div>` : ''}
+      </td>
+      <td><span class="badge badge-grey">${escapeHtml(r.device_type || '配电线路')}</span></td>
+      <td><span class="badge ${termBadgeClass}">${escapeHtml(r.terminal_status || '正常')}</span></td>
+      <td><span class="badge ${lineBadgeClass}">${escapeHtml(r.line_status || '正常')}</span></td>
+      <td><span class="badge ${warnBadgeClass}">${escapeHtml(r.warning_status || '正常')}</span></td>
+      <td class="mono" style="font-size:11px;white-space:nowrap">${voltHtml}</td>
+      <td class="mono" style="font-size:11px;white-space:nowrap">${curHtml}</td>
+      <td class="mono" style="font-size:11px;white-space:nowrap">${phaseHtml}</td>
+      <td class="mono" style="font-size:11px;color:var(--text-secondary);white-space:nowrap">${escapeHtml(r.measure_time || '')}</td>
+      <td style="text-align:center">
+        <button class="btn btn-secondary btn-sm" onclick="reproduceSelectedMonitoringEvent('${escapeHtml(r.event_id)}')" title="自动提取该事件判定报警点并触发区段定位">
+          <i class="bi bi-play-circle"></i> 复现
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+window.filterMonitoringView = function() {
+  renderMonitoringRecords(window._currentMonitoringRecords || []);
+};
+
+window.onMonitoringTopoChange = async function() {
+  await loadMonitoringEvents();
+};
+
+window.handleMonitoringUpload = async function(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  showToast('正在解析监测数据文件...', 'info');
+  const topoFilter = document.getElementById('monitoring-topo-filter')?.value || null;
+  const res = await window.apiUploadMonitoringData(file, topoFilter);
+  input.value = '';
+
+  if (!res || !res.ok) {
+    showToast(res?.error || '上传解析失败', 'error');
+    return;
+  }
+
+  showToast(`监测数据上传成功！共解析 ${res.record_count} 条监测数据，生成 ${res.event_count} 组事件批次`, 'success');
+  await refreshTopoNameCache();
+  await loadMonitoringEvents(res.events?.[0]?.event_id);
+};
+
+window.seedSampleMonitoringData = async function() {
+  const btn = document.getElementById('btn-seed-sample');
+  if (btn) btn.disabled = true;
+  showToast('正在载入样例监测数据...', 'info');
+
+  const res = await window.apiSeedSampleMonitoringData();
+  if (btn) btn.disabled = false;
+
+  if (res && res.ok) {
+    showToast(res.message || '已成功载入样例监测数据', 'success');
+    await refreshTopoNameCache();
+    await loadMonitoringEvents();
+  } else {
+    showToast(res?.message || '载入样例数据失败', 'error');
+  }
+};
+
+window.reproduceSelectedMonitoringEvent = async function(targetEventId = null) {
+  const eventId = targetEventId || document.getElementById('monitoring-event-select')?.value;
+  if (!eventId) {
+    showToast('请选择需要复现的故障事件批次', 'warning');
+    return;
+  }
+
+  showToast('正在研判监测数据并执行故障区段定位...', 'info');
+  const res = await window.apiReproduceMonitoringEvent(eventId);
+  if (!res || !res.ok) {
+    showToast(res?.error || '复现故障定位失败', 'error');
+    return;
+  }
+
+  const topoId = res.topology_id;
+  const inferredPoles = res.inferred_poles || [];
+
+  // 1. 确保故障定位界面的拓扑下拉框选中对应拓扑并加载拓扑监测点
+  await fillCustomTopoOptions('fault-line-select');
+  const lineSelect = document.getElementById('fault-line-select');
+  if (lineSelect) lineSelect.value = topoId;
+  currentLine = topoId;
+  await ensureTopoDataLoaded(topoId);
+  buildQuickNodeList(topoId);
+
+  // 2. 清空既有报警点，并根据监测数据自动填充报警监测点（无需人工手动勾选）
+  clearAlarms();
+  if (inferredPoles.length > 0) {
+    inferredPoles.forEach(pole => addAlarmTag(pole));
+  }
+
+  // 3. 切换视图至"故障定位"
+  navTo('fault');
+
+  // 4. 展示区段定位结果与拓扑联动
+  if (res.fault_locate) {
+    const normalized = res.normalized_locate || (typeof window.normalizeBackendFaultResult === 'function' ? window.normalizeBackendFaultResult(res.fault_locate) : res.fault_locate);
+    renderFaultResult(normalized, topoId);
+
+    const alarmIds = normalized.alarm_ids || [];
+    const frontierIds = normalized.results?.map(r => r.frontier_id) || [];
+    const sectionPairs = (normalized.results || []).flatMap(r =>
+      r.candidate_ids.length ? r.candidate_ids.map(cid => [r.frontier_id, cid]) : [[r.frontier_id, null]]
+    );
+    if (typeof window.setFaultSection === 'function') {
+      window.setFaultSection(topoId, alarmIds, frontierIds, sectionPairs);
+    }
+  }
+
+  showToast(`已根据监测数据自动填充报警监测点 [${inferredPoles.join(', ') || '无'}]，并完成故障区段定位！`, 'success');
+  loadHistoryFromAPI();
+};
+
 // ======================== 登录/登出 ========================
 window.logout = async function() {
   try {
@@ -644,7 +919,7 @@ window.logout = async function() {
 document.addEventListener('DOMContentLoaded', async () => {
   renderHistoryTable();
 
-  // 后端可用时，从API拉取真实历史事件 + 恢复LLM配置状态
+  // 后端可用时，从API拉取真实历史事件 + 恢复LLM配置状态 + 载入监测数据
   // （延迟1.2s等api.js的checkBackend完成，避免_backendAvailable还没就绪就查询）
   setTimeout(async () => {
     const llmStatus = await window.apiGetLLMConfig();
@@ -652,6 +927,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await refreshTopoNameCache();
     await loadHistoryFromAPI();
+    await loadMonitoringEvents();
 
     // 顶部统计：已上传拓扑数 / 监测点总数，来自自定义拓扑列表
     try {
@@ -669,3 +945,4 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {}
   }, 1200);
 });
+

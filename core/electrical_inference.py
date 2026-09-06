@@ -359,3 +359,275 @@ def upload_historical_data(topo_id: str, baseline_csv_text: str | None, event_cs
     return UploadHistoricalDataResult(
         ok=True, baseline_rows=baseline_rows, event_count=event_count, event_rows=event_rows, warnings=warnings,
     )
+
+
+# ════════════════════════════════════════════════
+# 生产级监测数据导入与复现（10列标准数据模型）
+# ════════════════════════════════════════════════
+
+import re
+from typing import Any
+
+def clean_pole_identifier(raw: Any) -> str:
+    """从监测点原始名称（如'10kV松平线27.3.88.2.2.1小'）提取规范杆号/母线名"""
+    s = str(raw or "").strip()
+    s = re.sub(r"^(?:10\s*k+v)?(?:松平线|松坪线|火龙线|北冲线|极乐村线|邵九线)?#?", "", s, flags=re.I).strip()
+    s = re.sub(r"[大小支杆]+$", "", s).strip()
+    return s or str(raw or "").strip()
+
+
+def _match_col(cols: list[str], keywords: list[str]) -> str | None:
+    for c in cols:
+        c_clean = str(c).lower().replace(" ", "").replace("_", "")
+        for kw in keywords:
+            if kw in c_clean:
+                return c
+    return None
+
+
+def ingest_production_monitoring_file(
+    file_bytes: bytes,
+    filename: str,
+    topology_id: Optional[str] = None,
+) -> dict:
+    """
+    解析生产级监测数据文件（.xlsx / .xls / .csv），提取10大核心字段并分组落库：
+    1. 编号 (自动生成序号)
+    2. 监测点名称 (监测点名称1)
+    3. 设备类型
+    4. 终端状态
+    5. 线路状态 (如 短路:B相)
+    6. 预警状态 (如 低电压:A相)
+    7. 三相电压 (Ua, Ub, Uc，负数哨兵值统一处理)
+    8. 三相电流 (Ia, Ib, Ic)
+    9. 三相相位 (电压相位/电流相位)
+    10. 量测时间
+    
+    按量测时间滑动窗口（60s）自动聚合成多个事件批次，并识别出动作的异常监测点。
+    """
+    from . import db
+    from .custom_topology import seed_sp_hl_topologies_if_needed
+    seed_sp_hl_topologies_if_needed()
+
+    df = None
+    fn = filename.lower()
+    if fn.endswith((".xlsx", ".xls")):
+        import pandas as pd
+        df = pd.read_excel(io.BytesIO(file_bytes))
+    else:
+        import pandas as pd
+        for enc in ("utf-8-sig", "gb18030", "gbk", "utf-8"):
+            try:
+                df = pd.read_csv(io.BytesIO(file_bytes), encoding=enc)
+                break
+            except Exception:
+                continue
+        if df is None:
+            raise ValueError("无法解析该文件，请确保文件编码为 UTF-8 或 GBK")
+
+    cols = df.columns.tolist()
+    node_name_col = _match_col(cols, ["监测点名称1", "监测点名称", "监测点", "node_name", "nodename", "name", "杆号"])
+    device_type_col = _match_col(cols, ["设备类型", "devicetype", "type"])
+    terminal_status_col = _match_col(cols, ["终端状态", "terminalstatus", "terminal"])
+    line_status_col = _match_col(cols, ["线路状态", "linestatus", "line_state"])
+    warning_status_col = _match_col(cols, ["预警状态", "warningstatus", "warning", "alarmstatus"])
+    ua_col = _match_col(cols, ["a相电压(kv)", "a相电压", "ua", "voltage_a", "voltagea"])
+    ub_col = _match_col(cols, ["b相电压(kv)", "b相电压", "ub", "voltage_b", "voltageb"])
+    uc_col = _match_col(cols, ["c相电压(kv)", "c相电压", "uc", "voltage_c", "voltagec"])
+    ia_col = _match_col(cols, ["a相电流(a)", "a相电流", "ia", "current_a", "currenta"])
+    ib_col = _match_col(cols, ["b相电流(a)", "b相电流", "ib", "current_b", "currentb"])
+    ic_col = _match_col(cols, ["c相电流(a)", "c相电流", "ic", "current_c", "currentc"])
+    phase_a_col = _match_col(cols, ["a相电压相位", "a相电流相位", "a相相位", "phase_a", "phasea"])
+    phase_b_col = _match_col(cols, ["b相电压相位", "b相电流相位", "b相相位", "phase_b", "phaseb"])
+    phase_c_col = _match_col(cols, ["c相电压相位", "c相电流相位", "c相相位", "phase_c", "phasec"])
+    time_col = _match_col(cols, ["量测时间", "测量时间", "时间", "time", "timestamp", "datetime"])
+
+    if not node_name_col or not time_col:
+        raise ValueError("数据表必须包含'监测点名称'和'量测时间'两列")
+
+    import pandas as pd
+    df["_parsed_time"] = pd.to_datetime(df[time_col], errors="coerce")
+    df = df.dropna(subset=["_parsed_time"]).sort_values("_parsed_time")
+
+    topos = {t["id"]: t["name"] for t in db.list_custom_topologies()}
+
+    time_diff = df["_parsed_time"].diff().dt.total_seconds().abs()
+    event_groups = (time_diff > _EVENT_TIME_WINDOW_S).cumsum()
+
+    created_events = []
+    total_records = 0
+
+    for group_idx, (_, group_df) in enumerate(df.groupby(event_groups)):
+        first_time = group_df[time_col].iloc[0]
+        target_topo = topology_id
+        if not target_topo or target_topo not in topos:
+            sample_name = str(group_df[node_name_col].iloc[0])
+            if any(k in sample_name for k in ("松平", "松坪")):
+                target_topo = "ct_sp" if "ct_sp" in topos else (list(topos.keys())[0] if topos else "ct_sp")
+            elif any(k in sample_name for k in ("火龙", "HL")):
+                target_topo = "ct_hl" if "ct_hl" in topos else (list(topos.keys())[0] if topos else "ct_hl")
+            else:
+                target_topo = list(topos.keys())[0] if topos else "default"
+
+        topo_name = topos.get(target_topo, target_topo)
+        clean_time_str = str(first_time).replace("-", "").replace(":", "").replace(" ", "_")
+        event_id = f"evt_{clean_time_str}_{group_idx+1}"
+
+        records = []
+        abnormal_poles = []
+        summaries = []
+
+        for row_idx, (_, r) in enumerate(group_df.iterrows()):
+            node_name = str(r[node_name_col]).strip()
+            clean_pole = clean_pole_identifier(node_name)
+            device_type = str(r[device_type_col]).strip() if device_type_col else "配电线路"
+            terminal_status = str(r[terminal_status_col]).strip() if terminal_status_col else "正常"
+            line_status = str(r[line_status_col]).strip() if line_status_col else "正常"
+            warning_status = str(r[warning_status_col]).strip() if warning_status_col else "正常"
+            ua = _to_float(r[ua_col]) if ua_col else None
+            ub = _to_float(r[ub_col]) if ub_col else None
+            uc = _to_float(r[uc_col]) if uc_col else None
+            ia = _to_float(r[ia_col]) if ia_col else None
+            ib = _to_float(r[ib_col]) if ib_col else None
+            ic = _to_float(r[ic_col]) if ic_col else None
+            phase_a = _to_float(r[phase_a_col]) if phase_a_col else None
+            phase_b = _to_float(r[phase_b_col]) if phase_b_col else None
+            phase_c = _to_float(r[phase_c_col]) if phase_c_col else None
+            measure_time = str(r[time_col]).strip()
+
+            is_abnormal = False
+            reasons = []
+            if any(k in line_status for k in ("短路", "接地", "故障", "告警")):
+                is_abnormal = True
+                reasons.append(line_status)
+                if line_status not in summaries:
+                    summaries.append(line_status)
+            if warning_status and warning_status not in ("正常", "-", "---", ""):
+                is_abnormal = True
+                reasons.append(warning_status)
+                if warning_status not in summaries:
+                    summaries.append(warning_status)
+            for ph, val in [("A", ua), ("B", ub), ("C", uc)]:
+                if val is None:
+                    is_abnormal = True
+                    reasons.append(f"{ph}相缺相/无电压")
+                elif val <= 0.5:
+                    is_abnormal = True
+                    reasons.append(f"{ph}相严重低电压({val}kV)")
+
+            if is_abnormal:
+                abnormal_poles.append(clean_pole)
+
+            records.append({
+                "record_no": row_idx + 1,
+                "node_id": clean_pole,
+                "node_name": node_name,
+                "device_type": device_type,
+                "terminal_status": terminal_status,
+                "line_status": line_status,
+                "warning_status": warning_status,
+                "ua": ua,
+                "ub": ub,
+                "uc": uc,
+                "ia": ia,
+                "ib": ib,
+                "ic": ic,
+                "phase_a": phase_a,
+                "phase_b": phase_b,
+                "phase_c": phase_c,
+                "measure_time": measure_time,
+                "is_abnormal": is_abnormal,
+                "abnormal_reason": " / ".join(reasons) if reasons else "",
+            })
+
+        unique_inferred = list(dict.fromkeys(abnormal_poles))
+        fault_summary = "；".join(summaries) if summaries else ("多处监测点电压异常" if unique_inferred else "正常工况")
+
+        event_meta = {
+            "event_id": event_id,
+            "topology_id": target_topo,
+            "topology_name": topo_name,
+            "timestamp": str(first_time),
+            "record_count": len(records),
+            "abnormal_count": len(unique_inferred),
+            "fault_summary": fault_summary,
+            "inferred_poles": ", ".join(unique_inferred),
+        }
+        db.save_monitoring_event_and_records(event_meta, records)
+        created_events.append(event_meta)
+        total_records += len(records)
+
+    return {
+        "ok": True,
+        "event_count": len(created_events),
+        "record_count": total_records,
+        "events": created_events,
+    }
+
+
+def reproduce_monitoring_event(event_id: str) -> dict:
+    """
+    根据事件ID执行自动复现定位：
+    1. 调出该事件的所有监测记录及已自动判别的报警监测点
+    2. 调用核心矩阵法定夺故障候选区段
+    3. 整合电气量证据返回前端
+    """
+    from . import db
+    from .fault_locator import locate_fault
+    from .models import FaultLocateRequest
+
+    event_meta = db.get_monitoring_event(event_id)
+    if not event_meta:
+        raise ValueError(f"未找到事件: {event_id}")
+
+    records = db.get_monitoring_records(event_id)
+    raw_inferred = [s.strip() for s in (event_meta.get("inferred_poles") or "").split(",") if s.strip()]
+
+    if not raw_inferred:
+        raw_inferred = list(dict.fromkeys([r["node_id"] for r in records if r.get("is_abnormal")]))
+
+    topo_id = event_meta["topology_id"]
+    timestamp = event_meta["timestamp"]
+
+    locate_res = None
+    if raw_inferred:
+        req = FaultLocateRequest(
+            line=topo_id,
+            alarm_points=raw_inferred,
+            event_time=timestamp,
+        )
+        locate_res = locate_fault(req)
+
+    return {
+        "ok": True,
+        "event_id": event_id,
+        "topology_id": topo_id,
+        "topology_name": event_meta.get("topology_name", topo_id),
+        "timestamp": timestamp,
+        "inferred_poles": raw_inferred,
+        "fault_summary": event_meta.get("fault_summary", ""),
+        "record_count": len(records),
+        "records": records,
+        "fault_locate": locate_res.model_dump() if locate_res else None,
+    }
+
+
+def seed_sample_monitoring_data_if_empty() -> dict:
+    """如果当前监测数据库为空且data/历史数据/异常数据.xlsx存在，则自动载入样例数据"""
+    from pathlib import Path
+    from . import db
+    existing = db.list_monitoring_events()
+    if existing:
+        return {"ok": True, "message": "已有监测事件，跳过自动载入", "event_count": len(existing)}
+
+    sample_path = Path("data/历史数据/异常数据.xlsx")
+    if not sample_path.exists():
+        return {"ok": False, "message": "样例数据文件不存在"}
+
+    try:
+        content = sample_path.read_bytes()
+        res = ingest_production_monitoring_file(content, "异常数据.xlsx")
+        return {"ok": True, "message": "已成功载入样例监测数据", **res}
+    except Exception as e:
+        return {"ok": False, "message": f"载入样例数据失败: {e}"}
+

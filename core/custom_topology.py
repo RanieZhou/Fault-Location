@@ -284,3 +284,49 @@ def build_monitor_view(topo_id: str) -> tuple[list[NodeModel], list[EdgeModel]]:
         ))
 
     return node_models, edge_models
+
+
+def seed_sp_hl_topologies_if_needed() -> None:
+    """自动播种10kV松坪线和火龙线拓扑（若尚未存在），确保样例历史数据能立即复现定位。"""
+    from pathlib import Path
+    import pandas as pd
+    from . import db
+
+    topos = {t["id"]: t["name"] for t in db.list_custom_topologies()}
+    nodes_csv = Path("output/nodes.csv")
+    edges_csv = Path("output/edges.csv")
+    if not nodes_csv.exists() or not edges_csv.exists():
+        return
+
+    try:
+        nodes_df = pd.read_csv(nodes_csv)
+        edges_df = pd.read_csv(edges_csv)
+    except Exception:
+        return
+
+    # 1. 松坪线
+    if "ct_sp" not in topos and not any("松坪" in name for name in topos.values()):
+        sp_nodes_df = nodes_df[nodes_df["clean_id"].str.startswith("SP-")]
+        nodes = [{"node_id": "SOURCE", "label": "变电站"}] + [
+            {"node_id": r["clean_id"], "label": str(r["orig_pole"])}
+            for _, r in sp_nodes_df.iterrows()
+        ]
+        sp_edges_df = edges_df[(edges_df["from_id"].str.startswith("SP-") | (edges_df["from_id"] == "SOURCE")) & (edges_df["to_id"].str.startswith("SP-"))]
+        edges = [{"from_id": r["from_id"], "to_id": r["to_id"], "length_km": 1.0} for _, r in sp_edges_df.iterrows()]
+        db.create_custom_topology("ct_sp", "10kV 松坪线", nodes, edges)
+        monitor_ids = [r["clean_id"] for _, r in sp_nodes_df.iterrows()]
+        db.update_custom_monitor_points("ct_sp", monitor_ids, True)
+
+    # 2. 火龙线
+    if "ct_hl" not in topos and not any("火龙" in name for name in topos.values()):
+        hl_nodes_df = nodes_df[nodes_df["clean_id"].str.startswith("HL-")]
+        nodes = [{"node_id": "SOURCE", "label": "变电站"}] + [
+            {"node_id": r["clean_id"], "label": str(r["orig_pole"])}
+            for _, r in hl_nodes_df.iterrows()
+        ]
+        hl_edges_df = edges_df[(edges_df["from_id"].str.startswith("HL-") | (edges_df["from_id"] == "SOURCE")) & (edges_df["to_id"].str.startswith("HL-"))]
+        edges = [{"from_id": r["from_id"], "to_id": r["to_id"], "length_km": 1.0} for _, r in hl_edges_df.iterrows()]
+        db.create_custom_topology("ct_hl", "10kV 火龙线", nodes, edges)
+        monitor_ids = [r["clean_id"] for _, r in hl_nodes_df.iterrows()]
+        db.update_custom_monitor_points("ct_hl", monitor_ids, True)
+

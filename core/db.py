@@ -95,6 +95,50 @@ CREATE TABLE IF NOT EXISTS custom_event_readings (
     current_a   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_event_readings_event ON custom_event_readings(event_id);
+
+-- 生产级监测数据记录（10列标准展示：编号、监测点名称、设备类型、终端状态、线路状态、预警状态、三相电压、三相电流、三相相位、时间）
+CREATE TABLE IF NOT EXISTS monitoring_records (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id          TEXT NOT NULL,
+    topology_id       TEXT NOT NULL,
+    record_no         INTEGER NOT NULL,
+    node_id           TEXT NOT NULL,
+    node_name         TEXT NOT NULL,
+    device_type       TEXT NOT NULL DEFAULT '配电线路',
+    terminal_status   TEXT NOT NULL DEFAULT '正常',
+    line_status       TEXT NOT NULL DEFAULT '正常',
+    warning_status    TEXT NOT NULL DEFAULT '正常',
+    ua                REAL,
+    ub                REAL,
+    uc                REAL,
+    ia                REAL,
+    ib                REAL,
+    ic                REAL,
+    phase_a           REAL,
+    phase_b           REAL,
+    phase_c           REAL,
+    measure_time      TEXT NOT NULL,
+    is_abnormal       INTEGER NOT NULL DEFAULT 0,
+    abnormal_reason   TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_mon_rec_event ON monitoring_records(event_id);
+CREATE INDEX IF NOT EXISTS idx_mon_rec_topo ON monitoring_records(topology_id);
+CREATE INDEX IF NOT EXISTS idx_mon_rec_time ON monitoring_records(measure_time);
+
+CREATE TABLE IF NOT EXISTS monitoring_events (
+    event_id          TEXT PRIMARY KEY,
+    topology_id       TEXT NOT NULL,
+    topology_name     TEXT NOT NULL DEFAULT '',
+    timestamp         TEXT NOT NULL,
+    record_count      INTEGER NOT NULL DEFAULT 0,
+    abnormal_count    INTEGER NOT NULL DEFAULT 0,
+    fault_summary     TEXT NOT NULL DEFAULT '',
+    inferred_poles    TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_mon_evt_topo ON monitoring_events(topology_id);
+CREATE INDEX IF NOT EXISTS idx_mon_evt_time ON monitoring_events(timestamp);
 """
 
 
@@ -430,3 +474,127 @@ def get_event_readings(event_id: str) -> list[dict]:
             (event_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ════════════════════════════════════════════════
+# 生产级监测数据存储与查询（10列标准数据模型）
+# ════════════════════════════════════════════════
+
+def save_monitoring_event_and_records(event_meta: dict, records: list[dict]) -> None:
+    """保存一次监测事件以及下属的所有10列原始记录"""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO monitoring_events
+               (event_id, topology_id, topology_name, timestamp, record_count, abnormal_count, fault_summary, inferred_poles)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event_meta["event_id"],
+                event_meta["topology_id"],
+                event_meta.get("topology_name", ""),
+                event_meta["timestamp"],
+                event_meta.get("record_count", len(records)),
+                event_meta.get("abnormal_count", 0),
+                event_meta.get("fault_summary", ""),
+                event_meta.get("inferred_poles", ""),
+            ),
+        )
+        conn.execute("DELETE FROM monitoring_records WHERE event_id = ?", (event_meta["event_id"],))
+        conn.executemany(
+            """INSERT INTO monitoring_records
+               (event_id, topology_id, record_no, node_id, node_name, device_type, terminal_status,
+                line_status, warning_status, ua, ub, uc, ia, ib, ic, phase_a, phase_b, phase_c,
+                measure_time, is_abnormal, abnormal_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    event_meta["event_id"],
+                    event_meta["topology_id"],
+                    r.get("record_no", idx + 1),
+                    r.get("node_id", ""),
+                    r.get("node_name", ""),
+                    r.get("device_type", "配电线路"),
+                    r.get("terminal_status", "正常"),
+                    r.get("line_status", "正常"),
+                    r.get("warning_status", "正常"),
+                    r.get("ua"),
+                    r.get("ub"),
+                    r.get("uc"),
+                    r.get("ia"),
+                    r.get("ib"),
+                    r.get("ic"),
+                    r.get("phase_a"),
+                    r.get("phase_b"),
+                    r.get("phase_c"),
+                    r.get("measure_time", ""),
+                    1 if r.get("is_abnormal") else 0,
+                    r.get("abnormal_reason", ""),
+                )
+                for idx, r in enumerate(records)
+            ],
+        )
+
+
+def list_monitoring_events(topology_id: str | None = None) -> list[dict]:
+    """获取所有监测事件列表（按时间倒序）"""
+    with _conn() as conn:
+        if topology_id:
+            rows = conn.execute(
+                """SELECT event_id, topology_id, topology_name, timestamp, record_count,
+                          abnormal_count, fault_summary, inferred_poles, created_at
+                   FROM monitoring_events
+                   WHERE topology_id = ?
+                   ORDER BY timestamp DESC""",
+                (topology_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT event_id, topology_id, topology_name, timestamp, record_count,
+                          abnormal_count, fault_summary, inferred_poles, created_at
+                   FROM monitoring_events
+                   ORDER BY timestamp DESC"""
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_monitoring_event(event_id: str) -> dict | None:
+    """获取单次事件概要信息"""
+    with _conn() as conn:
+        row = conn.execute(
+            """SELECT event_id, topology_id, topology_name, timestamp, record_count,
+                      abnormal_count, fault_summary, inferred_poles, created_at
+               FROM monitoring_events
+               WHERE event_id = ?""",
+            (event_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_monitoring_records(event_id: str) -> list[dict]:
+    """获取某事件下属的所有10列标准监测数据记录"""
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT id, event_id, topology_id, record_no, node_id, node_name,
+                      device_type, terminal_status, line_status, warning_status,
+                      ua, ub, uc, ia, ib, ic, phase_a, phase_b, phase_c,
+                      measure_time, is_abnormal, abnormal_reason
+               FROM monitoring_records
+               WHERE event_id = ?
+               ORDER BY record_no ASC, id ASC""",
+            (event_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def clear_monitoring_records(topology_id: str | None = None) -> None:
+    with _conn() as conn:
+        if topology_id:
+            event_ids = [r[0] for r in conn.execute(
+                "SELECT event_id FROM monitoring_events WHERE topology_id = ?", (topology_id,)
+            ).fetchall()]
+            for eid in event_ids:
+                conn.execute("DELETE FROM monitoring_records WHERE event_id = ?", (eid,))
+            conn.execute("DELETE FROM monitoring_events WHERE topology_id = ?", (topology_id,))
+        else:
+            conn.execute("DELETE FROM monitoring_records")
+            conn.execute("DELETE FROM monitoring_events")
+
