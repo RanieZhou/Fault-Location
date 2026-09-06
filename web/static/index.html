@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>配网故障定位系统</title>
+  <meta name="description" content="10kV配电网智能故障定位Agent系统，支持拓扑可视化、矩阵法定位、LLM智能分析">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <!-- Bootstrap Icons v1.11 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <!-- D3.js v7 -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== 顶部栏 ===== -->
+  <header id="header">
+    <div class="header-logo">
+      <div class="logo-icon">
+        <i class="bi bi-grid-3x3-gap-fill" style="color:#fff;font-size:17px"></i>
+      </div>
+      <div>
+        <div class="logo-text">配网故障定位系统</div>
+        <div class="logo-sub">10kV Distribution Fault Intelligence</div>
+      </div>
+    </div>
+
+    <div class="header-sep"></div>
+
+    <div class="status-pills">
+      <div class="status-pill">
+        <span class="status-dot green"></span>
+        <span id="topo-count-pill">0 个拓扑</span>
+      </div>
+      <div class="status-pill" id="llm-pill">
+        <span class="status-dot grey" id="llm-dot"></span>
+        <span id="llm-pill-text">LLM 未连接</span>
+      </div>
+    </div>
+
+    <div class="header-time" id="header-clock">--:--:--</div>
+
+    <div class="alarm-badge" onclick="navTo('history')" title="历史告警">
+      <i class="bi bi-bell icon" style="font-size:18px;color:var(--text-secondary)"></i>
+      <span class="alarm-count" id="alarm-count" style="display:none">0</span>
+    </div>
+  </header>
+
+  <!-- ===== 主体 ===== -->
+  <div id="main">
+
+    <!-- ===== 左侧导航 ===== -->
+    <nav id="sidebar">
+      <div class="nav-item active" onclick="navTo('topology')" data-view="topology" title="拓扑监控">
+        <i class="bi bi-diagram-3 nav-icon"></i>
+        <span>拓扑监控</span>
+      </div>
+      <div class="nav-item" onclick="navTo('fault')" data-view="fault" title="故障定位">
+        <i class="bi bi-exclamation-triangle nav-icon"></i>
+        <span>故障定位</span>
+        <span class="nav-badge" id="fault-nav-badge" style="display:none">!</span>
+      </div>
+      <div class="nav-item" onclick="navTo('agent')" data-view="agent" title="Agent 分析">
+        <i class="bi bi-terminal nav-icon"></i>
+        <span>Agent 分析</span>
+      </div>
+      <div class="nav-item" onclick="navTo('history')" data-view="history" title="历史事件">
+        <i class="bi bi-table nav-icon"></i>
+        <span>历史事件</span>
+      </div>
+      <div class="nav-item" onclick="navTo('customtopo')" data-view="customtopo" title="自定义拓扑">
+        <i class="bi bi-diagram-2 nav-icon"></i>
+        <span>自定义拓扑</span>
+      </div>
+      <div class="nav-item" onclick="navTo('settings')" data-view="settings" title="系统设置">
+        <i class="bi bi-gear nav-icon"></i>
+        <span>系统设置</span>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="llm-status" id="sidebar-llm-status">
+          <span class="status-dot grey" id="sidebar-llm-dot"></span>
+          <span id="sidebar-llm-text">LLM 未配置</span>
+        </div>
+        <div class="sidebar-logout" onclick="logout()" title="退出登录">
+          <i class="bi bi-box-arrow-right"></i>
+          <span>退出登录</span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ===== 内容区 ===== -->
+    <div id="content">
+
+      <!-- ===== 面包屑条：当前路由路径 ===== -->
+      <div id="breadcrumb-bar">
+        <div class="breadcrumb-path">
+          <span>首页</span>
+          <i class="bi bi-chevron-right breadcrumb-sep"></i>
+          <span class="breadcrumb-current" id="breadcrumb-current">拓扑监控</span>
+        </div>
+      </div>
+
+      <!-- ============ 视图1：拓扑监控 ============ -->
+      <div class="view active" id="view-topology">
+        <div style="padding:16px;flex:1;display:flex;flex-direction:column;gap:14px;overflow:hidden;min-height:0;">
+          <!-- 统计行 -->
+          <div class="stats-row">
+            <div class="stat-card">
+              <div class="stat-icon cyan"><i class="bi bi-plug" style="font-size:20px;color:var(--cyan)"></i></div>
+              <div>
+                <div class="stat-label">已上传拓扑</div>
+                <div class="stat-value" id="stat-lines">0</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon green"><i class="bi bi-reception-4" style="font-size:20px;color:var(--green)"></i></div>
+              <div>
+                <div class="stat-label">监测点总数</div>
+                <div class="stat-value" id="stat-nodes">0</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon amber"><i class="bi bi-exclamation-triangle" style="font-size:20px;color:var(--amber)"></i></div>
+              <div>
+                <div class="stat-label">今日告警</div>
+                <div class="stat-value amber" id="stat-alarms">0</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon red"><i class="bi bi-x-circle" style="font-size:20px;color:var(--red)"></i></div>
+              <div>
+                <div class="stat-label">历史故障</div>
+                <div class="stat-value red" id="stat-faults">0</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 拓扑图 + 节点面板 -->
+          <div style="display:grid;grid-template-columns:1fr 300px;gap:14px;flex:1;overflow:hidden;min-height:0;">
+            <!-- 拓扑图 -->
+            <div class="topo-container">
+              <div class="topo-toolbar">
+                <button class="btn btn-secondary btn-sm" onclick="topoZoomIn()" title="放大">+</button>
+                <button class="btn btn-secondary btn-sm" onclick="topoZoomOut()" title="缩小">-</button>
+                <button class="btn btn-secondary btn-sm" onclick="topoReset()" title="复位">
+                  <i class="bi bi-fullscreen-exit"></i>
+                </button>
+              </div>
+              <select class="input topo-line-select" id="topo-line-select" onchange="switchLine(this.value)">
+              </select>
+              <div class="topo-legend">
+                <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div>正常</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div>告警</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div>故障</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#7c3aed"></div>电源</div>
+              </div>
+              <svg id="topo-svg"></svg>
+              <div id="topo-empty-state" style="display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-muted)">
+                <i class="bi bi-diagram-2" style="font-size:40px;opacity:0.4"></i>
+                <div style="font-size:13px">还没有任何拓扑</div>
+                <button class="btn btn-primary btn-sm" onclick="navTo('customtopo')">前往上传拓扑</button>
+              </div>
+            </div>
+
+            <!-- 节点详情 -->
+            <div class="node-panel" id="node-panel">
+              <div class="card" style="flex-shrink:0">
+                <div class="card-header">
+                  <div class="card-title">
+                    <i class="bi bi-pin-map icon"></i>节点详情
+                  </div>
+                </div>
+                <div id="node-detail-body">
+                  <div class="node-info-placeholder">
+                    <i class="bi bi-hand-index ph-icon" style="font-size:32px;display:block;margin-bottom:8px;color:var(--text-muted)"></i>
+                    <div>点击拓扑图中的<br>监测点查看详情</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" style="flex-shrink:0">
+                <div class="card-header">
+                  <div class="card-title">
+                    <i class="bi bi-geo-alt icon"></i>快速定位
+                  </div>
+                </div>
+                <div class="card-body">
+                  <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">选中节点后，将其设为报警点</p>
+                  <button class="btn btn-secondary btn-sm" style="width:100%;margin-bottom:6px" onclick="addSelectedAsAlarm()">
+                    <i class="bi bi-plus"></i> 添加为报警点
+                  </button>
+                  <button class="btn btn-primary btn-sm" style="width:100%" onclick="navTo('fault')">
+                    前往故障定位 <i class="bi bi-arrow-right"></i>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 当前线路信息 -->
+              <div class="card" style="flex-shrink:0">
+                <div class="card-header">
+                  <div class="card-title">
+                    <i class="bi bi-bar-chart-line icon"></i>线路概况
+                  </div>
+                </div>
+                <div class="card-body" id="line-summary">
+                  <div style="font-size:12px;color:var(--text-secondary)">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                      <span style="color:var(--text-muted)">线路名称</span>
+                      <span id="ls-name">-</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                      <span style="color:var(--text-muted)">监测点数</span>
+                      <span id="ls-nodes">-</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                      <span style="color:var(--text-muted)">分支数</span>
+                      <span id="ls-branches">-</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between">
+                      <span style="color:var(--text-muted)">历史故障</span>
+                      <span id="ls-faults">-</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 视图2：故障定位 ============ -->
+      <div class="view" id="view-fault">
+        <div style="padding:16px 16px 0;flex-shrink:0">
+          <h2 style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:4px">
+            <i class="bi bi-exclamation-triangle" style="color:var(--cyan);margin-right:6px"></i>故障区段定位
+          </h2>
+          <p style="font-size:12px;color:var(--text-muted)">输入本次事件中报警的监测点，系统自动定位故障区段</p>
+        </div>
+        <div class="fault-layout" style="padding:16px;flex:1;overflow:hidden">
+
+          <!-- 左：输入面板 -->
+          <div class="fault-input-panel">
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-list-ul icon"></i>线路选择</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group" style="margin-bottom:0">
+                  <select class="input" id="fault-line-select" onchange="onFaultLineChange()">
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-exclamation-triangle icon"></i>报警监测点</div>
+                <button class="btn btn-ghost btn-sm" onclick="clearAlarms()">清空</button>
+              </div>
+              <div class="card-body">
+                <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+                  输入监测点编号并回车添加，或从下方快速选择
+                </p>
+                <div class="alarm-tags" id="alarm-tags" onclick="document.getElementById('tag-input').focus()">
+                  <input id="tag-input" class="tag-input" placeholder="输入监测点编号，回车确认..." onkeydown="handleTagInput(event)" autocomplete="off">
+                </div>
+                <div style="margin-top:10px">
+                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">快速选择（<span id="quick-line-name">-</span>）：</div>
+                  <div id="quick-node-list" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-clipboard-data icon"></i>已知故障类型（可选）</div>
+              </div>
+              <div class="card-body">
+                <select class="input" id="fault-type-select">
+                  <option value="">未知 / 自动识别</option>
+                  <option value="A接地">A相接地</option>
+                  <option value="B接地">B相接地</option>
+                  <option value="C接地">C相接地</option>
+                  <option value="AB两相">AB两相短路</option>
+                  <option value="BC两相">BC两相短路</option>
+                  <option value="AC两相">AC两相短路</option>
+                  <option value="三相">三相短路</option>
+                </select>
+              </div>
+            </div>
+
+            <button class="btn btn-primary btn-lg" style="width:100%" onclick="runFaultLocation()">
+              <i class="bi bi-search"></i> 开始定位
+            </button>
+          </div>
+
+          <!-- 右：结果面板 -->
+          <div class="fault-result-panel" id="fault-result-panel">
+            <div class="card" style="flex:1">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-geo-alt icon"></i>定位结果</div>
+                <span id="result-badge" class="badge badge-grey">等待分析</span>
+              </div>
+              <div class="card-body" id="fault-result-body">
+                <div style="text-align:center;padding:48px 0;color:var(--text-muted)">
+                  <i class="bi bi-map" style="font-size:48px;display:block;margin-bottom:12px;opacity:0.4"></i>
+                  <div style="font-size:13px">选择线路和报警点后，<br>点击"开始定位"查看结果</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" id="fault-topo-card" style="display:none">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-diagram-3 icon"></i>故障区段示意</div>
+              </div>
+              <div style="padding:12px">
+                <svg id="fault-topo-svg" style="width:100%;height:180px"></svg>
+              </div>
+            </div>
+
+            <div class="card" id="ai-assist-card" style="display:none">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-chat-square-dots icon"></i>AI 辅助分析</div>
+                <button class="btn btn-primary btn-sm" onclick="askAgentForFault()">向Agent详细分析</button>
+              </div>
+              <div class="card-body" id="ai-assist-body"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 视图3：Agent对话 ============ -->
+      <div class="view" id="view-agent">
+        <div class="agent-chat-area">
+          <!-- 消息区 -->
+          <div class="agent-messages" id="agent-messages">
+            <div class="msg agent">
+              <div class="msg-avatar"><i class="bi bi-robot" style="font-size:15px;color:#a78bfa"></i></div>
+              <div>
+                <div class="msg-bubble">
+                  <p>你好，我是配网故障定位 Agent。</p>
+                  <p>支持能力：</p>
+                  <p>
+                    · 根据故障指示器报警点，定位故障区段<br>
+                    · 解读三相电压电流数据，判断故障类型<br>
+                    · 查询历史故障案例，提供巡线建议<br>
+                    · 查询已上传的拓扑结构（先在"自定义拓扑"页上传）
+                  </p>
+                  <p>请描述故障情况，或选择下方快捷问题。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 快捷问题 -->
+          <div style="padding:0 20px">
+            <div class="quick-prompts">
+              <button class="quick-prompt" onclick="sendQuickPrompt(this.textContent)">现在系统里有哪些拓扑？</button>
+              <button class="quick-prompt" onclick="sendQuickPrompt(this.textContent)">分析最近一次历史故障</button>
+              <button class="quick-prompt" onclick="sendQuickPrompt(this.textContent)">介绍一下当前拓扑结构</button>
+              <button class="quick-prompt" onclick="sendQuickPrompt(this.textContent)">三相短路和单相接地的区别</button>
+            </div>
+          </div>
+
+          <!-- 输入栏 -->
+          <div class="agent-input-bar">
+            <div class="agent-input-wrap">
+              <textarea class="agent-textarea" id="agent-textarea"
+                placeholder="描述故障情况，例如：XX拓扑的18号点和18.25号点B相短路..."
+                onkeydown="handleAgentKey(event)" rows="1" oninput="autoResize(this)"></textarea>
+              <button class="btn btn-primary btn-icon btn-lg" id="agent-send-btn" onclick="sendAgentMessage()" title="发送 (Enter)">
+                <i class="bi bi-send-fill" style="font-size:16px"></i>
+              </button>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+              <select class="input" id="agent-provider-select" style="width:auto;font-size:12px;padding:3px 24px 3px 8px" onchange="onProviderChange()">
+                <option value="deepseek">DeepSeek</option>
+                <option value="qwen">通义千问</option>
+                <option value="openai">OpenAI</option>
+                <option value="custom">第三方 / 自定义</option>
+              </select>
+              <span style="font-size:11px;color:var(--text-muted)">模型提供商</span>
+              <div style="flex:1"></div>
+              <button class="btn btn-ghost btn-sm" onclick="clearAgentHistory()">清空对话</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右侧工具面板 -->
+        <div class="agent-side-panel">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px">工具调用记录</div>
+          <div id="tool-log" style="display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--text-muted)">
+            <div style="text-align:center;padding:24px 0">
+              <i class="bi bi-tools" style="font-size:28px;display:block;margin-bottom:8px;opacity:0.4"></i>
+              <div>对话开始后，<br>工具调用记录显示在这里</div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px">可用工具</div>
+          <div id="available-tools-list" style="display:flex;flex-direction:column;gap:6px">
+            <div class="tool-call-block" style="cursor:default">
+              <div class="tool-call-header" style="cursor:default">
+                <i class="bi bi-tools" style="color:var(--text-muted)"></i>
+                <span class="tool-name">query_topology</span>
+              </div>
+            </div>
+            <div class="tool-call-block" style="cursor:default">
+              <div class="tool-call-header" style="cursor:default">
+                <i class="bi bi-tools" style="color:var(--text-muted)"></i>
+                <span class="tool-name">locate_fault_from_alarms</span>
+              </div>
+            </div>
+            <div class="tool-call-block" style="cursor:default">
+              <div class="tool-call-header" style="cursor:default">
+                <i class="bi bi-tools" style="color:var(--text-muted)"></i>
+                <span class="tool-name">search_similar_history</span>
+              </div>
+            </div>
+            <div class="tool-call-block" style="cursor:default">
+              <div class="tool-call-header" style="cursor:default">
+                <i class="bi bi-tools" style="color:var(--text-muted)"></i>
+                <span class="tool-name">get_node_info</span>
+              </div>
+            </div>
+            <div class="tool-call-block" style="cursor:default">
+              <div class="tool-call-header" style="cursor:default">
+                <i class="bi bi-tools" style="color:var(--text-muted)"></i>
+                <span class="tool-name">generate_dispatch_suggestion</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 视图4：历史事件 ============ -->
+      <div class="view" id="view-history">
+        <div style="padding:16px;flex-shrink:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div>
+            <h2 style="font-size:16px;font-weight:700;color:var(--text-primary)">
+              <i class="bi bi-table" style="color:var(--cyan);margin-right:6px"></i>历史故障事件
+            </h2>
+            <p style="font-size:12px;color:var(--text-muted)">
+              共 <span id="history-total">0</span> 次故障记录（<span id="history-line-breakdown"></span>）
+            </p>
+          </div>
+          <div style="flex:1"></div>
+          <select class="input" style="width:150px" id="history-line-filter" onchange="filterHistory()">
+            <option value="">全部拓扑</option>
+          </select>
+          <select class="input" style="width:130px" id="history-type-filter" onchange="filterHistory()">
+            <option value="">全部类型</option>
+            <option value="短路:A">A相</option>
+            <option value="短路:B">B相</option>
+            <option value="短路: C">C相</option>
+          </select>
+          <input class="input" style="width:200px" placeholder="搜索..." id="history-search" oninput="filterHistory()" autocomplete="off">
+        </div>
+
+        <div style="padding:0 16px 16px;flex:1;overflow:auto">
+          <div class="history-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>线路</th>
+                  <th>故障时间</th>
+                  <th>故障类型</th>
+                  <th>报警点</th>
+                  <th>报警前沿</th>
+                  <th>候选故障区段</th>
+                  <th>置信度</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 视图5b：自定义拓扑 ============ -->
+      <div class="view" id="view-customtopo">
+        <div style="padding:16px;flex-shrink:0">
+          <h2 style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:4px">
+            <i class="bi bi-diagram-2" style="color:var(--cyan);margin-right:6px"></i>自定义拓扑
+          </h2>
+          <p style="font-size:12px;color:var(--text-muted)">
+            上传节点表+边表 → 标记哪些节点是监测点 → 设置线路参数 → （可选）上传历史电气量数据，之后就能用矩阵法/自动推理做故障定位
+          </p>
+        </div>
+
+        <div style="padding:0 16px 16px;flex:1;overflow:hidden;display:grid;grid-template-columns:320px 1fr;gap:14px;min-height:0">
+
+          <!-- 左：上传 + 列表 -->
+          <div style="display:flex;flex-direction:column;gap:14px;min-height:0;overflow-y:auto">
+            <div class="card" style="flex-shrink:0">
+              <div class="card-header"><div class="card-title"><i class="bi bi-cloud-upload icon"></i>上传新拓扑</div></div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">拓扑名称</label>
+                  <input class="input" id="ct-upload-name" placeholder="例如：示例10kV馈线" autocomplete="off">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" style="display:flex;align-items:center;justify-content:space-between">
+                    <span>边表 CSV</span>
+                    <span style="font-weight:400">
+                      <a href="/static/templates/topology_edges_template.csv" download="拓扑边表模板.csv" class="action-btn" style="margin-right:10px"><i class="bi bi-download"></i> 下载模板</a>
+                      <span class="action-btn" onclick="ctToggleTemplatePreview()"><i class="bi bi-eye"></i> 预览示例</span>
+                    </span>
+                  </label>
+                  <input class="input" type="file" id="ct-upload-edges" accept=".csv">
+                  <div class="form-hint">列：from_id,to_id[,length_km 或 length_m 或 length_ft]（长度列可选，直接带上就不用上传后再补）；唯一没有入边的节点会被当作电源根节点</div>
+                  <div id="ct-template-preview" style="display:none;margin-top:8px"></div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">节点表 CSV（可选）</label>
+                  <input class="input" type="file" id="ct-upload-nodes" accept=".csv">
+                  <div class="form-hint">列：node_id[,label]。大多数情况不需要单独传——不传时节点直接从边表里的id反推，label默认用id本身；只有想给节点起一个和id不同的展示名称时才需要这张表</div>
+                </div>
+                <button class="btn btn-primary" style="width:100%" onclick="ctUpload()">
+                  <i class="bi bi-cloud-upload"></i> 上传
+                </button>
+                <div id="ct-upload-result"></div>
+              </div>
+            </div>
+
+            <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:120px">
+              <div class="card-header"><div class="card-title"><i class="bi bi-list-ul icon"></i>已上传拓扑</div></div>
+              <div class="card-body" id="ct-list" style="overflow-y:auto;flex:1">
+                <div style="text-align:center;padding:20px 0;color:var(--text-muted);font-size:12px">暂无自定义拓扑</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右：管理面板（内容由 custom-topo.js 动态生成） -->
+          <div id="ct-manage-panel" style="min-height:0;overflow-y:auto">
+            <div style="text-align:center;padding:64px 0;color:var(--text-muted)">
+              <i class="bi bi-diagram-2" style="font-size:48px;display:block;margin-bottom:12px;opacity:0.4"></i>
+              <div>上传新拓扑，或从左侧列表选择已有拓扑<br>开始标记监测点、设置线路参数</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ============ 视图5：系统设置 ============ -->
+      <div class="view" id="view-settings">
+        <div style="padding:16px;flex-shrink:0">
+          <h2 style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:4px">
+            <i class="bi bi-gear" style="color:var(--cyan);margin-right:6px"></i>系统设置
+          </h2>
+          <p style="font-size:12px;color:var(--text-muted)">配置LLM提供商、数据路径和系统参数</p>
+        </div>
+
+        <div style="padding:0 16px 16px;overflow-y:auto;flex:1">
+          <div class="settings-grid">
+
+            <!-- LLM 配置 -->
+            <div class="card" style="grid-column:1/-1">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-hdd-network icon"></i>LLM 提供商配置</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">主力提供商</label>
+                  <div class="llm-provider-tabs" id="provider-tabs">
+                    <button class="provider-tab active" onclick="selectProvider('deepseek', this)">DeepSeek</button>
+                    <button class="provider-tab" onclick="selectProvider('qwen', this)">通义千问</button>
+                    <button class="provider-tab" onclick="selectProvider('openai', this)">OpenAI</button>
+                    <button class="provider-tab" onclick="selectProvider('custom', this)">第三方 / 自定义</button>
+                  </div>
+                </div>
+
+                <div id="provider-deepseek" class="provider-config">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group" style="grid-column:1/-1">
+                      <label class="form-label">Base URL</label>
+                      <div style="display:flex;gap:8px">
+                        <input class="input" id="deepseek-url" value="https://api.deepseek.com/v1" autocomplete="off" style="flex:1" oninput="onProviderConfigChange('deepseek')">
+                        <button class="btn btn-secondary btn-icon" onclick="fetchModelsFor('deepseek')" title="获取模型列表" id="deepseek-fetch-models-btn" disabled>
+                          <i class="bi bi-cloud-download"></i>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Key</label>
+                      <input class="input" type="password" id="deepseek-key" placeholder="sk-..." autocomplete="new-password" oninput="onProviderConfigChange('deepseek')">
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">模型</label>
+                      <input class="input" id="deepseek-model" list="deepseek-model-list" value="deepseek-chat">
+                      <datalist id="deepseek-model-list">
+                        <option value="deepseek-chat"></option>
+                        <option value="deepseek-reasoner"></option>
+                      </datalist>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="provider-qwen" class="provider-config" style="display:none">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group" style="grid-column:1/-1">
+                      <label class="form-label">Base URL</label>
+                      <div style="display:flex;gap:8px">
+                        <input class="input" id="qwen-url" value="https://dashscope.aliyuncs.com/compatible-mode/v1" autocomplete="off" style="flex:1" oninput="onProviderConfigChange('qwen')">
+                        <button class="btn btn-secondary btn-icon" onclick="fetchModelsFor('qwen')" title="获取模型列表" id="qwen-fetch-models-btn" disabled>
+                          <i class="bi bi-cloud-download"></i>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Key</label>
+                      <input class="input" type="password" id="qwen-key" placeholder="sk-..." autocomplete="new-password" oninput="onProviderConfigChange('qwen')">
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">模型</label>
+                      <input class="input" id="qwen-model" list="qwen-model-list" value="qwen-max">
+                      <datalist id="qwen-model-list">
+                        <option value="qwen-max"></option>
+                        <option value="qwen-plus"></option>
+                        <option value="qwen-turbo"></option>
+                      </datalist>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="provider-openai" class="provider-config" style="display:none">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group" style="grid-column:1/-1">
+                      <label class="form-label">Base URL</label>
+                      <div style="display:flex;gap:8px">
+                        <input class="input" id="openai-url" value="https://api.openai.com/v1" autocomplete="off" style="flex:1" oninput="onProviderConfigChange('openai')">
+                        <button class="btn btn-secondary btn-icon" onclick="fetchModelsFor('openai')" title="获取模型列表" id="openai-fetch-models-btn" disabled>
+                          <i class="bi bi-cloud-download"></i>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Key</label>
+                      <input class="input" type="password" id="openai-key" placeholder="sk-..." autocomplete="new-password" oninput="onProviderConfigChange('openai')">
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">模型</label>
+                      <input class="input" id="openai-model" list="openai-model-list" value="gpt-4o">
+                      <datalist id="openai-model-list">
+                        <option value="gpt-4o"></option>
+                        <option value="gpt-4o-mini"></option>
+                        <option value="gpt-4-turbo"></option>
+                      </datalist>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="provider-custom" class="provider-config" style="display:none">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group" style="grid-column:1/-1">
+                      <label class="form-label">Base URL</label>
+                      <div style="display:flex;gap:8px">
+                        <input class="input" id="custom-url" placeholder="http://your-api-host/v1" autocomplete="off" style="flex:1" oninput="onProviderConfigChange('custom')">
+                        <button class="btn btn-secondary btn-icon" onclick="fetchModelsFor('custom')" title="获取模型列表" id="custom-fetch-models-btn" disabled>
+                          <i class="bi bi-cloud-download"></i>
+                        </button>
+                      </div>
+                      <div class="form-hint">任何兼容 OpenAI Chat Completions 接口的服务都可以填在这里（中转站/自建网关等）</div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Key</label>
+                      <input class="input" type="password" id="custom-key" placeholder="sk-..." autocomplete="new-password" oninput="onProviderConfigChange('custom')">
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">模型</label>
+                      <input class="input" id="custom-model" list="custom-model-list" placeholder="点击左侧按钮获取，或直接输入模型名">
+                      <datalist id="custom-model-list"></datalist>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display:flex;gap:8px;margin-top:4px">
+                  <button class="btn btn-primary" onclick="saveLLMConfig()">
+                    <i class="bi bi-floppy"></i> 保存配置
+                  </button>
+                  <button class="btn btn-secondary" onclick="testLLMConnection()">
+                    <i class="bi bi-link-45deg"></i> 测试连接
+                  </button>
+                </div>
+                <div id="llm-test-result"></div>
+              </div>
+            </div>
+
+            <!-- 算法参数 -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-gear icon"></i>算法参数</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">事件分组时间窗（秒）</label>
+                  <input class="input" type="number" id="cfg-time-window" value="15" min="5" max="60" autocomplete="off">
+                  <div class="form-hint">同一次故障事件中报警记录的最大时间间隔</div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">故障指示器报警阈值（A）</label>
+                  <input class="input" type="number" id="cfg-alarm-threshold" value="200" min="50" max="2000" autocomplete="off">
+                  <div class="form-hint">触发故障指示器的电流阈值</div>
+                </div>
+                <button class="btn btn-secondary" style="width:100%" onclick="saveAlgoConfig()">保存参数</button>
+              </div>
+            </div>
+
+            <!-- 数据路径 -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-folder icon"></i>数据路径</div>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">历史数据目录</label>
+                  <input class="input" id="cfg-data-dir" value="./data/历史数据" autocomplete="off">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">输出目录</label>
+                  <input class="input" id="cfg-output-dir" value="./output" autocomplete="off">
+                </div>
+                <button class="btn btn-secondary" style="width:100%" onclick="savePaths()">保存路径</button>
+              </div>
+            </div>
+
+            <!-- 系统信息 -->
+            <div class="card" style="grid-column:1/-1">
+              <div class="card-header">
+                <div class="card-title"><i class="bi bi-info-circle icon"></i>系统信息</div>
+              </div>
+              <div class="card-body">
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;font-size:12px">
+                  <div><div style="color:var(--text-muted);margin-bottom:4px">系统版本</div><div style="color:var(--cyan);font-family:'JetBrains Mono',monospace">v1.0.0-beta</div></div>
+                  <div><div style="color:var(--text-muted);margin-bottom:4px">后端状态</div><div id="backend-status" style="color:var(--text-muted)">检测中...</div></div>
+                  <div><div style="color:var(--text-muted);margin-bottom:4px">数据加载</div><div id="data-load-status" style="color:var(--text-muted)">未加载</div></div>
+                  <div><div style="color:var(--text-muted);margin-bottom:4px">已上传拓扑</div><div id="settings-topo-count" style="color:var(--text-primary)">-</div></div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- Toast容器 -->
+<div id="toast-container"></div>
+
+<!-- 脚本 -->
+<script src="/static/js/data.js"></script>
+<script src="/static/js/topology.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/agent.js"></script>
+<script src="/static/js/custom-topo.js"></script>
+<script src="/static/js/app.js"></script>
+
+</body>
+</html>

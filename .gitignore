@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Environment and Secrets (CRITICAL: Never commit real API keys)
+.env
+.env.local
+*.key
+
+# Database and SQLite runtime files
+*.db
+*.db-journal
+*.sqlite3
+data/app.db
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+.work/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Temporary & logs
+*.log
