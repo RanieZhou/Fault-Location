@@ -954,17 +954,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 后端可用时，从API拉取真实历史事件 + 恢复LLM配置状态 + 载入监测数据
   // （延迟1.2s等api.js的checkBackend完成，避免_backendAvailable还没就绪就查询）
+  //
+  // 每一步单独try/catch，互不连累——这几步本来就是独立的功能模块，之前
+  // 是一整条不间断的await链，任何一步抛异常（哪怕只是浏览器缓存了旧版
+  // api.js、缺一个新加的函数）都会让它之后的所有步骤（包括顶部统计这种
+  // 完全不相关的东西）全部卡住不再执行，表现成页面一直转圈/显示不出来，
+  // 具体是哪一步的问题也无从判断。
   setTimeout(async () => {
-    const llmStatus = await window.apiGetLLMConfig();
-    if (llmStatus.configured) updateLLMStatus(true, llmStatus.provider);
+    const safeStep = async (fn, label) => {
+      try { await fn(); } catch (e) { console.error(`[初始化] ${label} 失败:`, e); }
+    };
 
-    await refreshTopoNameCache();
-    await loadHistoryFromAPI();
-    await loadMonitoringFilterOptions();
-    await loadMonitoringRecords();
+    await safeStep(async () => {
+      const llmStatus = await window.apiGetLLMConfig();
+      if (llmStatus.configured) updateLLMStatus(true, llmStatus.provider);
+    }, 'LLM配置状态');
+    await safeStep(refreshTopoNameCache, '拓扑名称缓存');
+    await safeStep(loadHistoryFromAPI, '故障定位历史记录');
+    await safeStep(loadMonitoringFilterOptions, '监测数据筛选选项');
+    await safeStep(loadMonitoringRecords, '监测数据记录');
 
     // 顶部统计：已上传拓扑数 / 监测点总数，来自自定义拓扑列表
-    try {
+    await safeStep(async () => {
       const topos = await window.apiListCustomTopologies();
       const statLines = document.getElementById('stat-lines');
       if (statLines) statLines.textContent = topos.length;
@@ -976,7 +987,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (settingsTopoCount) settingsTopoCount.textContent = `${topos.length} 个`;
       const statFaults = document.getElementById('stat-faults');
       if (statFaults) statFaults.textContent = window.HISTORY_DATA.length;
-    } catch {}
+    }, '顶部统计');
   }, 1200);
 });
 

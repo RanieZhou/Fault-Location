@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>配网故障定位系统</title>
   <meta name="description" content="10kV配电网智能故障定位Agent系统，支持拓扑可视化、矩阵法定位、LLM智能分析">
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/style.css?v=20260908">
   <!-- Bootstrap Icons v1.11 -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <!-- D3.js v7 -->
@@ -838,13 +838,15 @@
 <!-- Toast容器 -->
 <div id="toast-container"></div>
 
-<!-- 脚本 -->
-<script src="/static/js/data.js"></script>
-<script src="/static/js/topology.js"></script>
-<script src="/static/js/api.js"></script>
-<script src="/static/js/agent.js"></script>
-<script src="/static/js/custom-topo.js"></script>
-<script src="/static/js/app.js"></script>
+<!-- 脚本（?v= 是手动维护的缓存破坏参数——每次这批JS有实质性改动就更新它，
+     不然浏览器可能一直用缓存的旧版本，导致代码明明改了但看不到效果，
+     还伪装成"数据加载不出来"这类看似无关的故障） -->
+<script src="/static/js/data.js?v=20260908"></script>
+<script src="/static/js/topology.js?v=20260908"></script>
+<script src="/static/js/api.js?v=20260908"></script>
+<script src="/static/js/agent.js?v=20260908"></script>
+<script src="/static/js/custom-topo.js?v=20260908"></script>
+<script src="/static/js/app.js?v=20260908"></script>
 
 </body>
 </html>
