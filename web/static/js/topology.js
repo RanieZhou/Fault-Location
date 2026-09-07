@@ -23,6 +23,23 @@
     text:    'rgba(255,255,255,0.65)',
   };
 
+  // 节点标签常带整条线路名当公共前缀（如"10kV梧桐线#02分段开关"），横向排布时
+  // 长标签容易和相邻节点的标签撞在一起——渲染时裁掉这段公共前缀只显示有区分度
+  // 的部分，数据本身（n.label）不变，节点详情面板等仍显示完整名称。
+  function computeLabelPrefix(nodes) {
+    const labels = nodes.filter(n => n.id !== 'SOURCE').map(n => n.label || '');
+    if (labels.length < 2) return '';
+    let prefix = labels[0];
+    for (let i = 1; i < labels.length && prefix; i++) {
+      let j = 0;
+      while (j < prefix.length && j < labels[i].length && prefix[j] === labels[i][j]) j++;
+      prefix = prefix.slice(0, j);
+    }
+    // 前缀太短没有裁剪价值，或者裁掉后会让某个节点标签变成空字符串，都不裁剪
+    if (prefix.length < 2 || labels.some(l => l.length === prefix.length)) return '';
+    return prefix;
+  }
+
   // ======================== 初始化 ========================
   window.initTopology = function() {
     svg = d3.select('#topo-svg');
@@ -123,7 +140,7 @@
     const roots = nodes.filter(n => !n.parent || n.parent === null);
     roots.forEach(r => calcLeaf(r.id));
 
-    const X_STEP = 110;
+    const X_STEP = 150;
     const Y_STEP = 38;
     const pos = {};
     let nextLeaf = 0;
@@ -186,6 +203,9 @@
     const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
     const faultSection = computeFaultEdges(nodeById);
     const pos = computeLayout(nodes);
+    const labelPrefix = computeLabelPrefix(nodes);
+    const shortLabel = (label) => labelPrefix && label && label.startsWith(labelPrefix)
+      ? label.slice(labelPrefix.length) : label;
 
     // 偏移使SOURCE在左边
     const svgEl = document.getElementById('topo-svg');
@@ -314,7 +334,8 @@
         .attr('fill', isMonitor ? COLOR.text : 'rgba(255,255,255,0.35)')
         .attr('font-size', isMonitor ? 10 : 8)
         .attr('font-family', 'JetBrains Mono, monospace')
-        .text(n.label);
+        .text(shortLabel(n.label))
+        .append('title').text(n.label);
     });
 
     // 初始居中

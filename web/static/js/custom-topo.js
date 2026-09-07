@@ -451,7 +451,21 @@
     if (!roots.length) return;
     roots.forEach(r => calcLeaf(r.node_id));
 
-    const X_STEP = 70, Y_STEP = 26;
+    // 节点label常带整条线路名当公共前缀，横向排布时长标签容易和相邻节点的标签
+    // 撞在一起（跟topology.js主图同样的问题）——这里裁掉公共前缀只显示有区分度
+    // 的部分，是独立的一份简化实现（这个预览本来就和主图渲染逻辑分开维护）。
+    const previewLabels = detail.nodes.map(n => n.label || '');
+    let labelPrefix = previewLabels[0] || '';
+    for (let i = 1; i < previewLabels.length && labelPrefix; i++) {
+      let j = 0;
+      while (j < labelPrefix.length && j < previewLabels[i].length && labelPrefix[j] === previewLabels[i][j]) j++;
+      labelPrefix = labelPrefix.slice(0, j);
+    }
+    if (labelPrefix.length < 2 || previewLabels.some(l => l.length === labelPrefix.length)) labelPrefix = '';
+    const shortLabel = (label) => labelPrefix && label && label.startsWith(labelPrefix)
+      ? label.slice(labelPrefix.length) : label;
+
+    const X_STEP = 100, Y_STEP = 26;
     const pos = {};
     let nextLeaf = 0;
     function assignPos(id, x) {
@@ -493,7 +507,8 @@
       grp.append('text').attr('y', -9).attr('text-anchor', 'middle')
         .attr('fill', 'rgba(255,255,255,0.6)').attr('font-size', 9)
         .attr('font-family', 'JetBrains Mono, monospace')
-        .text(n.label);
+        .text(shortLabel(n.label))
+        .append('title').text(n.label);
     });
   }
 
