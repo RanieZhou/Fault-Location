@@ -508,8 +508,10 @@ def ingest_production_monitoring_file(
         clean_time_str = str(first_time).replace("-", "").replace(":", "").replace(" ", "_")
         event_id = f"evt_{clean_time_str}_{group_idx+1}"
 
-        # 获取该拓扑的实际节点以建立精确映射
-        topo_nodes = db.get_custom_nodes(target_topo)
+        # 获取该拓扑的实际节点以建立精确映射——只在装有监测设备的节点里找，
+        # 结构杆塔不可能产生电气量读数，不该成为匹配候选，否则会把数据错记到
+        # 一个没有监测设备的节点上（哪怕名称字符串凑巧对上了）。
+        topo_nodes = [n for n in db.get_custom_nodes(target_topo) if n.get("is_monitor_point")]
 
         records = []
         abnormal_poles = []
