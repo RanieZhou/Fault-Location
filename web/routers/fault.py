@@ -154,6 +154,35 @@ async def upload_monitoring_data_api(
         raise HTTPException(400, f"监测数据解析失败: {e}")
 
 
+@router.get("/monitoring/records")
+async def query_monitoring_records_api(
+    topology_id: Optional[str] = None,
+    device_type: Optional[str] = None,
+    line_status: Optional[str] = None,
+    terminal_status: Optional[str] = None,
+    warning_status: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """历史数据页用：不按事件批次分组，把所有10列监测记录打平按量测时间倒序分页查询，
+    支持按枚举字段筛选、按监测点名称模糊搜索。"""
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    items, total = _db.query_monitoring_records(
+        topology_id=topology_id, device_type=device_type, line_status=line_status,
+        terminal_status=terminal_status, warning_status=warning_status, search=search,
+        page=page, page_size=page_size,
+    )
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/monitoring/records/filter-options")
+async def get_monitoring_filter_options_api(topology_id: Optional[str] = None):
+    """历史数据页的筛选下拉框选项——从实际数据里取当前出现过的取值，不写死枚举"""
+    return _db.list_monitoring_filter_options(topology_id)
+
+
 @router.get("/monitoring/events")
 async def list_monitoring_events_api(topology_id: Optional[str] = None):
     """获取所有监测事件列表（包含时间戳、监测点数量、故障简述、自动识别的报警点）"""

@@ -7,7 +7,7 @@ const VIEW_LABELS = {
   topology: '拓扑监控',
   fault: '故障定位',
   agent: 'Agent 分析',
-  history: '历史事件',
+  history: '历史数据',
   customtopo: '自定义拓扑',
   settings: '系统设置',
 };
@@ -28,7 +28,7 @@ window.navTo = function(viewId) {
   // 视图切换时的初始化
   if (viewId === 'history') {
     refreshTopoNameCache().then(() => {
-      ['history-line-filter', 'monitoring-topo-filter'].forEach(selId => {
+      ['history-line-filter', 'mon-filter-topo'].forEach(selId => {
         const sel = document.getElementById(selId);
         if (sel) {
           const cur = sel.value;
@@ -44,7 +44,8 @@ window.navTo = function(viewId) {
       if (window._currentHistoryTab === 'faults') {
         renderHistoryTable();
       } else {
-        loadMonitoringEvents();
+        loadMonitoringFilterOptions();
+        loadMonitoringRecords();
       }
     });
   }
@@ -646,9 +647,10 @@ window.replayHistoryEvent = function(eventId) {
 // ======================== 生产级监测数据管理与自动复现 ========================
 
 window._currentHistoryTab = 'monitoring';
-window._monitoringEvents = [];
-window._currentMonitoringEvent = null;
-window._currentMonitoringRecords = [];
+window._monPage = 1;
+window._monPageSize = 10;
+window._monTotal = 0;
+let _monSearchDebounce = null;
 
 window.switchHistoryTab = function(tab) {
   window._currentHistoryTab = tab;
@@ -662,7 +664,8 @@ window.switchHistoryTab = function(tab) {
     if (btnFaults) btnFaults.classList.remove('active');
     if (subMon) subMon.style.display = 'flex';
     if (subFaults) subFaults.style.display = 'none';
-    loadMonitoringEvents();
+    loadMonitoringFilterOptions();
+    loadMonitoringRecords();
   } else {
     if (btnMon) btnMon.classList.remove('active');
     if (btnFaults) btnFaults.classList.add('active');
@@ -672,85 +675,114 @@ window.switchHistoryTab = function(tab) {
   }
 };
 
-window.loadMonitoringEvents = async function(preserveEventId = null) {
-  const topoFilter = document.getElementById('monitoring-topo-filter')?.value || '';
-  const events = await window.apiListMonitoringEvents(topoFilter);
-  window._monitoringEvents = events || [];
-
-  const select = document.getElementById('monitoring-event-select');
-  if (!select) return;
-
-  if (window._monitoringEvents.length === 0) {
-    select.innerHTML = '<option value="">暂无监测事件记录，请先上传监测数据或载入样例</option>';
-    const badgeEl = document.getElementById('event-inferred-badge');
-    if (badgeEl) badgeEl.innerHTML = '';
-    renderMonitoringRecords([]);
-    return;
-  }
-
-  select.innerHTML = window._monitoringEvents.map(e => {
-    const topoLabel = window._topoNameCache[e.topology_id] || e.topology_name || e.topology_id;
-    const isAbn = e.abnormal_count > 0 ? `⚠️异常:${e.abnormal_count}` : '正常';
-    return `<option value="${escapeHtml(e.event_id)}">${escapeHtml(e.timestamp)} · [${escapeHtml(topoLabel)}] 监测点:${e.record_count} ${isAbn} (${escapeHtml(e.fault_summary || '正常工况')})</option>`;
-  }).join('');
-
-  let targetId = preserveEventId;
-  if (!targetId || !window._monitoringEvents.some(e => e.event_id === targetId)) {
-    targetId = window._monitoringEvents[0].event_id;
-  }
-  select.value = targetId;
-  await window.onSelectMonitoringEvent(targetId);
+// 筛选下拉框选项——从实际出现过的数据里取值，不写死枚举，换一批监测数据、
+// 换一套状态文案也不用改代码
+window.loadMonitoringFilterOptions = async function() {
+  const topoFilter = document.getElementById('mon-filter-topo')?.value || '';
+  const opts = await window.apiGetMonitoringFilterOptions(topoFilter);
+  const fillSelect = (id, values) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.value;
+    const placeholder = sel.querySelector('option[value=""]')?.outerHTML || '<option value="">全部</option>';
+    sel.innerHTML = placeholder + (values || []).map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+    if (values && values.includes(cur)) sel.value = cur;
+  };
+  fillSelect('mon-filter-device-type', opts.device_types);
+  fillSelect('mon-filter-line-status', opts.line_statuses);
+  fillSelect('mon-filter-terminal-status', opts.terminal_statuses);
+  fillSelect('mon-filter-warning-status', opts.warning_statuses);
 };
 
-window.onSelectMonitoringEvent = async function(eventId) {
-  if (!eventId) return;
-  const badgeEl = document.getElementById('event-inferred-badge');
-  const details = await window.apiGetMonitoringEventDetails(eventId);
-  if (!details || !details.event) {
-    if (badgeEl) badgeEl.innerHTML = '';
-    renderMonitoringRecords([]);
-    return;
-  }
+function currentMonitoringFilters() {
+  return {
+    topology_id: document.getElementById('mon-filter-topo')?.value || '',
+    device_type: document.getElementById('mon-filter-device-type')?.value || '',
+    line_status: document.getElementById('mon-filter-line-status')?.value || '',
+    terminal_status: document.getElementById('mon-filter-terminal-status')?.value || '',
+    warning_status: document.getElementById('mon-filter-warning-status')?.value || '',
+    search: document.getElementById('mon-filter-search')?.value?.trim() || '',
+  };
+}
 
-  window._currentMonitoringEvent = details.event;
-  window._currentMonitoringRecords = details.records || [];
+// 历史数据表格：不再按事件批次分组，所有10列监测记录打平按量测时间倒序分页展示，
+// 每行独立支持"复现"（拿这一行的event_id触发对应批次的自动定位）
+window.loadMonitoringRecords = async function() {
+  const tbody = document.getElementById('monitoring-records-tbody');
+  if (tbody) tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted)">正在加载监测数据...</td></tr>`;
 
-  if (badgeEl) {
-    const inferred = details.event.inferred_poles ? details.event.inferred_poles.split(',').map(s => s.trim()).filter(Boolean) : [];
-    const inferredHtml = inferred.length > 0
-      ? inferred.map(p => `<span class="badge badge-red" style="margin-right:3px">${escapeHtml(p)}</span>`).join('')
-      : '<span class="badge badge-grey">无明显报警点</span>';
-    const summaryHtml = details.event.fault_summary ? `<span class="badge badge-amber" style="margin-left:6px">${escapeHtml(details.event.fault_summary)}</span>` : '';
-    badgeEl.innerHTML = `<span style="color:var(--text-muted);font-size:12px">自动判定报警点:</span> ${inferredHtml}${summaryHtml}`;
-  }
-
-  renderMonitoringRecords(window._currentMonitoringRecords);
+  const res = await window.apiQueryMonitoringRecords({
+    ...currentMonitoringFilters(),
+    page: window._monPage,
+    page_size: window._monPageSize,
+  });
+  window._monTotal = res.total || 0;
+  renderMonitoringRecords(res.items || []);
+  updateMonitoringPager();
 };
+
+window.onMonitoringFilterChange = function() {
+  window._monPage = 1;
+  loadMonitoringRecords();
+};
+
+window.onMonitoringSearchInput = function() {
+  clearTimeout(_monSearchDebounce);
+  _monSearchDebounce = setTimeout(() => { window._monPage = 1; loadMonitoringRecords(); }, 350);
+};
+
+window.resetMonitoringFilters = function() {
+  ['mon-filter-topo', 'mon-filter-device-type', 'mon-filter-line-status', 'mon-filter-terminal-status', 'mon-filter-warning-status'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (sel) sel.value = '';
+  });
+  const search = document.getElementById('mon-filter-search');
+  if (search) search.value = '';
+  window._monPage = 1;
+  loadMonitoringRecords();
+};
+
+window.onMonitoringPageSizeChange = function() {
+  window._monPageSize = parseInt(document.getElementById('mon-page-size')?.value, 10) || 10;
+  window._monPage = 1;
+  loadMonitoringRecords();
+};
+
+window.onMonitoringPagePrev = function() {
+  if (window._monPage <= 1) return;
+  window._monPage--;
+  loadMonitoringRecords();
+};
+
+window.onMonitoringPageNext = function() {
+  const totalPages = Math.max(1, Math.ceil(window._monTotal / window._monPageSize));
+  if (window._monPage >= totalPages) return;
+  window._monPage++;
+  loadMonitoringRecords();
+};
+
+function updateMonitoringPager() {
+  const totalPages = Math.max(1, Math.ceil(window._monTotal / window._monPageSize));
+  const totalEl = document.getElementById('mon-page-total');
+  const infoEl = document.getElementById('mon-page-info');
+  const prevBtn = document.getElementById('mon-page-prev');
+  const nextBtn = document.getElementById('mon-page-next');
+  if (totalEl) totalEl.textContent = window._monTotal;
+  if (infoEl) infoEl.textContent = `第 ${window._monPage} / ${totalPages} 页`;
+  if (prevBtn) prevBtn.disabled = window._monPage <= 1;
+  if (nextBtn) nextBtn.disabled = window._monPage >= totalPages;
+}
 
 function renderMonitoringRecords(records) {
   const tbody = document.getElementById('monitoring-records-tbody');
   if (!tbody) return;
 
-  const keyword = document.getElementById('monitoring-search')?.value?.trim().toLowerCase() || '';
-  let filtered = records;
-  if (keyword) {
-    filtered = records.filter(r =>
-      (r.node_name || '').toLowerCase().includes(keyword) ||
-      (r.node_id || '').toLowerCase().includes(keyword) ||
-      (r.device_type || '').toLowerCase().includes(keyword) ||
-      (r.terminal_status || '').toLowerCase().includes(keyword) ||
-      (r.line_status || '').toLowerCase().includes(keyword) ||
-      (r.warning_status || '').toLowerCase().includes(keyword) ||
-      (r.abnormal_reason || '').toLowerCase().includes(keyword)
-    );
-  }
-
-  if (filtered.length === 0) {
+  if (records.length === 0) {
     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted)">未找到匹配的监测记录</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = filtered.map(r => {
+  tbody.innerHTML = records.map(r => {
     const isAbnormal = !!r.is_abnormal;
     const rowClass = isAbnormal ? 'row-abnormal' : '';
 
@@ -815,20 +847,12 @@ function renderMonitoringRecords(records) {
   }).join('');
 }
 
-window.filterMonitoringView = function() {
-  renderMonitoringRecords(window._currentMonitoringRecords || []);
-};
-
-window.onMonitoringTopoChange = async function() {
-  await loadMonitoringEvents();
-};
-
 window.handleMonitoringUpload = async function(input) {
   const file = input.files && input.files[0];
   if (!file) return;
 
   showToast('正在解析监测数据文件...', 'info');
-  const topoFilter = document.getElementById('monitoring-topo-filter')?.value || null;
+  const topoFilter = document.getElementById('mon-filter-topo')?.value || null;
   const res = await window.apiUploadMonitoringData(file, topoFilter);
   input.value = '';
 
@@ -839,7 +863,9 @@ window.handleMonitoringUpload = async function(input) {
 
   showToast(`监测数据上传成功！共解析 ${res.record_count} 条监测数据，生成 ${res.event_count} 组事件批次`, 'success');
   await refreshTopoNameCache();
-  await loadMonitoringEvents(res.events?.[0]?.event_id);
+  window._monPage = 1;
+  await loadMonitoringFilterOptions();
+  await loadMonitoringRecords();
 };
 
 window.seedSampleMonitoringData = async function() {
@@ -853,16 +879,18 @@ window.seedSampleMonitoringData = async function() {
   if (res && res.ok) {
     showToast(res.message || '已成功载入样例监测数据', 'success');
     await refreshTopoNameCache();
-    await loadMonitoringEvents();
+    window._monPage = 1;
+    await loadMonitoringFilterOptions();
+    await loadMonitoringRecords();
   } else {
     showToast(res?.message || '载入样例数据失败', 'error');
   }
 };
 
-window.reproduceSelectedMonitoringEvent = async function(targetEventId = null) {
-  const eventId = targetEventId || document.getElementById('monitoring-event-select')?.value;
+window.reproduceSelectedMonitoringEvent = async function(targetEventId) {
+  const eventId = targetEventId;
   if (!eventId) {
-    showToast('请选择需要复现的故障事件批次', 'warning');
+    showToast('未找到该记录所属的事件批次', 'warning');
     return;
   }
 
@@ -932,7 +960,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await refreshTopoNameCache();
     await loadHistoryFromAPI();
-    await loadMonitoringEvents();
+    await loadMonitoringFilterOptions();
+    await loadMonitoringRecords();
 
     // 顶部统计：已上传拓扑数 / 监测点总数，来自自定义拓扑列表
     try {

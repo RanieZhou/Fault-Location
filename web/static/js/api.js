@@ -313,6 +313,30 @@ window.apiListMonitoringEvents = async function(topologyId) {
   }
 };
 
+window.apiQueryMonitoringRecords = async function(params) {
+  try {
+    const qs = new URLSearchParams();
+    Object.entries(params || {}).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, v); });
+    const r = await fetch(`${API_BASE}/api/fault/monitoring/records?${qs.toString()}`);
+    if (!r.ok) return { items: [], total: 0, page: 1, page_size: 10 };
+    return await r.json();
+  } catch {
+    return { items: [], total: 0, page: 1, page_size: 10 };
+  }
+};
+
+window.apiGetMonitoringFilterOptions = async function(topologyId) {
+  try {
+    let url = `${API_BASE}/api/fault/monitoring/records/filter-options`;
+    if (topologyId) url += `?topology_id=${encodeURIComponent(topologyId)}`;
+    const r = await fetch(url);
+    if (!r.ok) return { device_types: [], line_statuses: [], terminal_statuses: [], warning_statuses: [] };
+    return await r.json();
+  } catch {
+    return { device_types: [], line_statuses: [], terminal_statuses: [], warning_statuses: [] };
+  }
+};
+
 window.apiGetMonitoringEventDetails = async function(eventId) {
   try {
     const r = await fetch(`${API_BASE}/api/fault/monitoring/events/${encodeURIComponent(eventId)}`);

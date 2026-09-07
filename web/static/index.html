@@ -65,9 +65,9 @@
         <i class="bi bi-terminal nav-icon"></i>
         <span>Agent 分析</span>
       </div>
-      <div class="nav-item" onclick="navTo('history')" data-view="history" title="历史事件">
+      <div class="nav-item" onclick="navTo('history')" data-view="history" title="历史数据">
         <i class="bi bi-table nav-icon"></i>
-        <span>历史事件</span>
+        <span>历史数据</span>
       </div>
       <div class="nav-item" onclick="navTo('customtopo')" data-view="customtopo" title="自定义拓扑">
         <i class="bi bi-diagram-2 nav-icon"></i>
@@ -437,33 +437,19 @@
         </div>
       </div>
 
-      <!-- ============ 视图4：历史事件与监测数据 ============ -->
+      <!-- ============ 视图4：历史数据 ============ -->
       <div class="view" id="view-history">
-        <div style="padding:16px;flex-shrink:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-          <div>
-            <h2 style="font-size:16px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:8px">
-              <i class="bi bi-table" style="color:var(--cyan)"></i>监测数据与历史事件
-            </h2>
-            <p style="font-size:12px;color:var(--text-muted);margin-top:2px">
-              生产级10列标准监测数据 · 选择异常记录一键复现并自动填充报警监测点
-            </p>
-          </div>
-          <div style="flex:1"></div>
-          <input type="file" id="monitoring-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleMonitoringUpload(this)">
-          <button class="btn btn-secondary" onclick="document.getElementById('monitoring-file-input').click()" title="上传包含三相电压、电流、状态的原始监测表格">
-            <i class="bi bi-cloud-upload"></i> 上传监测数据
-          </button>
-          <button class="btn btn-secondary" onclick="seedSampleMonitoringData()" id="btn-seed-sample" title="直接导入系统自带的15条历史异常数据">
-            <i class="bi bi-file-earmark-spreadsheet"></i> 载入样例数据
-          </button>
-          <select class="input" style="width:140px" id="monitoring-topo-filter" onchange="onMonitoringTopoChange()">
-            <option value="">全部拓扑</option>
-          </select>
-          <input class="input" style="width:180px" placeholder="搜索监测点/状态..." id="monitoring-search" oninput="filterMonitoringView()" autocomplete="off">
+        <div style="padding:16px;flex-shrink:0">
+          <h2 style="font-size:16px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:8px">
+            <i class="bi bi-table" style="color:var(--cyan)"></i>历史数据
+          </h2>
+          <p style="font-size:12px;color:var(--text-muted);margin-top:2px">
+            生产级10列标准监测数据 · 按量测时间倒序展示，支持多字段筛选和分页 · 点击"复现"自动填充报警点并完成定位
+          </p>
         </div>
 
         <!-- 页面子选项卡 -->
-        <div class="history-sub-tabs">
+        <div class="history-sub-tabs" style="margin:0 16px">
           <button class="history-sub-tab active" id="tab-btn-monitoring" onclick="switchHistoryTab('monitoring')">
             <i class="bi bi-activity"></i> 监测数据记录 (10列标准展示)
           </button>
@@ -472,20 +458,34 @@
           </button>
         </div>
 
-        <!-- 子视图1：10列标准监测数据记录与复现 -->
+        <!-- 子视图1：10列标准监测数据记录（全量按时间倒序分页） -->
         <div id="subview-monitoring" style="padding:12px 16px 16px;flex:1;display:flex;flex-direction:column;gap:10px;overflow:hidden;min-height:0">
-          <!-- 事件快照切换卡片 -->
-          <div style="display:flex;align-items:center;gap:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;flex-shrink:0;flex-wrap:wrap">
-            <div style="font-size:12px;color:var(--text-muted);white-space:nowrap;display:flex;align-items:center;gap:6px">
-              <i class="bi bi-calendar-event" style="color:var(--cyan)"></i> 选择故障事件批次：
-            </div>
-            <select class="input" style="flex:1;min-width:320px;max-width:560px" id="monitoring-event-select" onchange="onSelectMonitoringEvent(this.value)">
-              <option value="">加载中...</option>
+          <!-- 筛选栏 -->
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0">
+            <select class="input" style="width:130px" id="mon-filter-topo" onchange="onMonitoringFilterChange()">
+              <option value="">全部拓扑</option>
             </select>
-            <div id="event-inferred-badge" style="font-size:12px;color:var(--text-secondary)"></div>
+            <select class="input" style="width:135px" id="mon-filter-device-type" onchange="onMonitoringFilterChange()">
+              <option value="">全部设备类型</option>
+            </select>
+            <select class="input" style="width:125px" id="mon-filter-line-status" onchange="onMonitoringFilterChange()">
+              <option value="">全部线路状态</option>
+            </select>
+            <select class="input" style="width:125px" id="mon-filter-terminal-status" onchange="onMonitoringFilterChange()">
+              <option value="">全部终端状态</option>
+            </select>
+            <select class="input" style="width:125px" id="mon-filter-warning-status" onchange="onMonitoringFilterChange()">
+              <option value="">全部预警状态</option>
+            </select>
+            <input class="input" style="width:170px" placeholder="搜索监测点名称..." id="mon-filter-search" oninput="onMonitoringSearchInput()" autocomplete="off">
+            <span class="action-btn" onclick="resetMonitoringFilters()"><i class="bi bi-arrow-counterclockwise"></i> 重置筛选</span>
             <div style="flex:1"></div>
-            <button class="btn btn-primary" id="btn-reproduce-current" onclick="reproduceSelectedMonitoringEvent()" style="white-space:nowrap">
-              <i class="bi bi-play-circle"></i> 复现该事件定位 →
+            <input type="file" id="monitoring-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleMonitoringUpload(this)">
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('monitoring-file-input').click()" title="上传包含三相电压、电流、状态的原始监测表格">
+              <i class="bi bi-cloud-upload"></i> 上传监测数据
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="seedSampleMonitoringData()" id="btn-seed-sample" title="直接导入系统自带的15条历史异常数据">
+              <i class="bi bi-file-earmark-spreadsheet"></i> 载入样例数据
             </button>
           </div>
 
@@ -511,6 +511,22 @@
                 <tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted)">正在加载监测数据...</td></tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- 分页栏 -->
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;font-size:12px;color:var(--text-muted)">
+            <div>共 <span id="mon-page-total">0</span> 条记录</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span>每页</span>
+              <select class="input" style="width:70px" id="mon-page-size" onchange="onMonitoringPageSizeChange()">
+                <option value="10">10</option>
+                <option value="30">30</option>
+                <option value="50">50</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" id="mon-page-prev" onclick="onMonitoringPagePrev()"><i class="bi bi-chevron-left"></i> 上一页</button>
+              <span id="mon-page-info">第 1 / 1 页</span>
+              <button class="btn btn-ghost btn-sm" id="mon-page-next" onclick="onMonitoringPageNext()">下一页 <i class="bi bi-chevron-right"></i></button>
+            </div>
           </div>
         </div>
 

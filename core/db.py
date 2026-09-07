@@ -596,6 +596,80 @@ def get_monitoring_records(event_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def query_monitoring_records(
+    topology_id: str | None = None,
+    device_type: str | None = None,
+    line_status: str | None = None,
+    terminal_status: str | None = None,
+    warning_status: str | None = None,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 10,
+) -> tuple[list[dict], int]:
+    """
+    历史数据页用：不分批次，把所有记录打平按量测时间倒序（最新在前）分页查询，
+    支持按10列表格里的枚举型字段做精确筛选、按监测点名称做模糊搜索。
+    返回 (当前页记录, 符合条件的总数)。
+    """
+    where = []
+    params: list = []
+    if topology_id:
+        where.append("topology_id = ?")
+        params.append(topology_id)
+    if device_type:
+        where.append("device_type = ?")
+        params.append(device_type)
+    if line_status:
+        where.append("line_status = ?")
+        params.append(line_status)
+    if terminal_status:
+        where.append("terminal_status = ?")
+        params.append(terminal_status)
+    if warning_status:
+        where.append("warning_status = ?")
+        params.append(warning_status)
+    if search:
+        where.append("node_name LIKE ?")
+        params.append(f"%{search}%")
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+    with _conn() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM monitoring_records {where_sql}", params
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT id, event_id, topology_id, record_no, node_id, node_name,
+                       device_type, terminal_status, line_status, warning_status,
+                       ua, ub, uc, ia, ib, ic, phase_a, phase_b, phase_c,
+                       measure_time, is_abnormal, abnormal_reason
+                FROM monitoring_records
+                {where_sql}
+                ORDER BY measure_time DESC, id DESC
+                LIMIT ? OFFSET ?""",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+    return [dict(r) for r in rows], total
+
+
+def list_monitoring_filter_options(topology_id: str | None = None) -> dict:
+    """历史数据页筛选下拉框用：当前实际出现过的设备类型/线路状态/终端状态/预警状态取值，
+    不用写死枚举——不同拓扑、不同生产系统导出的状态文案可能不一样。"""
+    where_sql = "WHERE topology_id = ?" if topology_id else ""
+    params = [topology_id] if topology_id else []
+    with _conn() as conn:
+        def _distinct(col: str) -> list[str]:
+            rows = conn.execute(
+                f"SELECT DISTINCT {col} FROM monitoring_records {where_sql} ORDER BY {col}", params
+            ).fetchall()
+            return [r[0] for r in rows if r[0]]
+        return {
+            "device_types": _distinct("device_type"),
+            "line_statuses": _distinct("line_status"),
+            "terminal_statuses": _distinct("terminal_status"),
+            "warning_statuses": _distinct("warning_status"),
+        }
+
+
 def clear_monitoring_records(topology_id: str | None = None) -> None:
     with _conn() as conn:
         if topology_id:
