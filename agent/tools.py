@@ -17,6 +17,20 @@ from core.models import FaultLocateRequest
 
 
 # ════════════════════════════════════════════════
+# 标准工具返回信封：{"ok", "error", "summary", **具体字段}
+# summary 是给人看的一句话中文摘要，graph.py 的 _preview() 直接读它
+# 生成 SSE 里的 result_preview，不用再为每个新工具单独写特判。
+# ════════════════════════════════════════════════
+
+def tool_ok(summary: str, **fields: Any) -> dict:
+    return {"ok": True, "error": None, "summary": summary, **fields}
+
+
+def tool_error(message: str, **fields: Any) -> dict:
+    return {"ok": False, "error": message, "summary": None, **fields}
+
+
+# ════════════════════════════════════════════════
 # OpenAI function calling 格式的工具定义
 # ════════════════════════════════════════════════
 
@@ -176,8 +190,8 @@ TOOL_SCHEMAS = [
 # 工具执行器
 # ════════════════════════════════════════════════
 
-def execute_tool(name: str, args: dict) -> Any:
-    """根据工具名和参数执行对应工具，返回结果（dict 或 str）"""
+def execute_tool(name: str, args: dict) -> dict:
+    """根据工具名和参数执行对应工具，返回统一信封 {ok, error, summary, **字段}（见 tool_ok/tool_error）"""
     if name == "list_topologies":
         return _list_topologies()
     elif name == "query_topology":
@@ -197,7 +211,7 @@ def execute_tool(name: str, args: dict) -> Any:
     elif name == "list_history_events":
         return _list_history(**args)
     else:
-        return {"error": f"未知工具: {name}"}
+        return tool_error(f"未知工具: {name}")
 
 
 # ════════════════════════════════════════════════
@@ -208,22 +222,23 @@ def _list_topologies() -> dict:
     from core import db
     topos = db.list_custom_topologies()
     if not topos:
-        return {"topologies": [], "note": "系统里还没有任何拓扑，需要用户先在\"自定义拓扑\"页上传节点/边表。"}
-    return {
-        "topologies": [
+        return tool_ok("系统里还没有任何拓扑，需要用户先在\"自定义拓扑\"页上传节点/边表。", topologies=[])
+    return tool_ok(
+        f"共 {len(topos)} 个拓扑：" + "、".join(f"{t['name']}({t['monitor_point_count']}个监测点)" for t in topos),
+        topologies=[
             {
                 "id": t["id"], "name": t["name"],
                 "node_count": t["node_count"], "monitor_point_count": t["monitor_point_count"],
             }
             for t in topos
         ],
-    }
+    )
 
 
 def _query_topology(line: str) -> dict:
     topo = get_topology(line)
     if topo.node_count == 0:
-        return {"error": f"拓扑 {line} 不存在，或还没有标记任何监测点（无法用于故障定位）。可以先调用 list_topologies 确认拓扑id。"}
+        return tool_error(f"拓扑 {line} 不存在，或还没有标记任何监测点（无法用于故障定位）。可以先调用 list_topologies 确认拓扑id。")
     nodes_brief = [
         {
             "id": n.id,
@@ -240,49 +255,41 @@ def _query_topology(line: str) -> dict:
         child_str = f" → [{', '.join(c.orig_pole for c in children)}]" if children else " (末端)"
         summary_lines.append(f"  {'  ' * n.depth}{n.orig_pole}(深度{n.depth}){child_str}")
 
-    return {
-        "line": line,
-        "node_count": topo.node_count,
-        "nodes": nodes_brief,
-        "topology_summary": "\n".join(summary_lines[:30]),  # 限制长度
-    }
+    return tool_ok(
+        f"{line} 共 {topo.node_count} 个监测点",
+        line=line,
+        node_count=topo.node_count,
+        nodes=nodes_brief,
+        topology_summary="\n".join(summary_lines[:30]),  # 限制长度
+    )
 
 
 def _locate_fault(line: str, alarm_points: list[str], fault_type: str = None) -> dict:
     req = FaultLocateRequest(line=line, alarm_points=alarm_points, fault_type=fault_type)
     result = locate_fault(req)
 
-    sections_text = []
-    for s in result.candidate_sections:
-        to_str = s.to_pole if s.to_pole and s.to_pole != "(末端)" else "线路末端"
-        sections_text.append(f"{s.from_pole} → {to_str}（置信度：{s.confidence}）")
+    sections = [s.model_dump() for s in result.candidate_sections]
+    if sections:
+        top = result.candidate_sections[0]
+        to_str = top.to_pole if top.to_pole and top.to_pole != "(末端)" else "线路末端"
+        summary = f"候选故障区段 {top.from_pole} → {to_str}（置信度：{top.confidence}），共 {len(sections)} 个候选区段"
+    else:
+        summary = "未找到候选故障区段"
 
-    payload = {
-        "line": line,
-        "alarm_points": alarm_points,
-        "frontier_points": result.frontier_points,
-        "candidate_sections": sections_text,
-        "confidence": result.confidence,
-        "note": result.note,
-        "alarmed_node_ids": result.alarmed_node_ids,
-        "raw_sections": [s.model_dump() for s in result.candidate_sections],
-    }
+    payload = tool_ok(
+        summary,
+        line=line,
+        alarm_points=alarm_points,
+        frontier_points=result.frontier_points,
+        candidate_sections=sections,
+        confidence=result.confidence,
+        note=result.note,
+        alarmed_node_ids=result.alarmed_node_ids,
+    )
 
     ea = result.electrical_analysis
     if ea and ea.matched:
-        payload["electrical_analysis"] = {
-            "推断故障相": ea.inferred_fault_phases,
-            "严重程度": ea.severity_label,
-            "说明": ea.note,
-            "各监测点详情": [
-                {
-                    "监测点": na.pole,
-                    "异常相": na.faulted_phases,
-                    "三相不平衡度(%)": na.imbalance_ratio,
-                }
-                for na in ea.node_analyses
-            ],
-        }
+        payload["electrical_analysis"] = ea.model_dump()
 
     return payload
 
@@ -290,26 +297,37 @@ def _locate_fault(line: str, alarm_points: list[str], fault_type: str = None) ->
 def _infer_fault_from_event(line: str, event_id: str) -> dict:
     from core.electrical_inference import infer_fault_from_event
     result = infer_fault_from_event(line, event_id)
-    out = {
-        "ok": result.ok,
-        "inferred_alarm_points": result.inferred_alarm_points,
-        "note": result.note,
-    }
-    if result.fault_locate:
-        fr = result.fault_locate
-        out["frontier_points"] = fr.frontier_points
-        out["candidate_sections"] = [
-            f"{s.from_pole} → {s.to_pole if s.to_pole != '(末端)' else '线路末端'}（置信度：{s.confidence}）"
-            for s in fr.candidate_sections
-        ]
-        out["confidence"] = fr.confidence
-    return out
+
+    if not result.ok:
+        return tool_error(result.note, inferred_alarm_points=result.inferred_alarm_points)
+
+    if not result.fault_locate:
+        # 推理跑通了，但没有判断出异常监测点——合法结果，不是失败
+        return tool_ok(result.note, inferred_alarm_points=result.inferred_alarm_points)
+
+    fr = result.fault_locate
+    sections = [s.model_dump() for s in fr.candidate_sections]
+    if sections:
+        top = fr.candidate_sections[0]
+        to_str = top.to_pole if top.to_pole and top.to_pole != "(末端)" else "线路末端"
+        summary = f"自动推理出异常点 {', '.join(result.inferred_alarm_points)}，候选故障区段 {top.from_pole} → {to_str}（置信度：{top.confidence}）"
+    else:
+        summary = f"自动推理出异常点 {', '.join(result.inferred_alarm_points)}，但未找到候选故障区段"
+
+    return tool_ok(
+        summary,
+        inferred_alarm_points=result.inferred_alarm_points,
+        note=result.note,
+        frontier_points=fr.frontier_points,
+        candidate_sections=sections,
+        confidence=fr.confidence,
+    )
 
 
 def _list_topology_events(line: str) -> dict:
     from core import db
     events = db.list_topology_events(line)
-    return {"line": line, "events": events}
+    return tool_ok(f"共 {len(events)} 条历史事件", line=line, events=events)
 
 
 def _search_similar_history(
@@ -351,36 +369,39 @@ def _search_similar_history(
             "similarity_score": score,
         })
 
-    return {
-        "line": line,
-        "similar_events": results,
-        "total_history": len(candidates),
-    }
+    return tool_ok(
+        f"找到 {len(results)} 条相似历史记录（该拓扑共 {len(candidates)} 条历史事件）",
+        line=line,
+        similar_events=results,
+        total_history=len(candidates),
+    )
 
 
 def _get_node_info(pole: str, line: str = None) -> dict:
     matched = get_node_by_pole(pole.strip(), line=line)
     if not matched:
-        return {"error": f"未找到监测点 {pole}。可以先调用 list_topologies / query_topology 确认拓扑id和监测点标识。"}
+        return tool_error(f"未找到监测点 {pole}。可以先调用 list_topologies / query_topology 确认拓扑id和监测点标识。")
 
     all_nodes = get_line_nodes(matched.line)
     by_id = {n.id: n for n in all_nodes}
     children = [n for n in all_nodes if n.parent_id == matched.id]
     siblings = [n for n in all_nodes if n.parent_id == matched.parent_id and n.id != matched.id] if matched.parent_id else []
+    kind = "末端节点" if len(children) == 0 else "分支节点" if len(children) > 1 else "中间节点"
 
-    return {
-        "id": matched.id,
-        "pole": matched.orig_pole,
-        "line": matched.line,
-        "depth": matched.depth,
-        "parent_id": matched.parent_id,
-        "parent_pole": by_id[matched.parent_id].orig_pole if matched.parent_id and matched.parent_id in by_id else "电源侧",
-        "children": [{"id": c.id, "pole": c.orig_pole} for c in children],
-        "siblings": [{"id": s.id, "pole": s.orig_pole} for s in siblings],
-        "load_kva": round(matched.load_kva, 1),
-        "is_leaf": len(children) == 0,
-        "is_branch_point": len(children) > 1,
-    }
+    return tool_ok(
+        f"{matched.orig_pole}，深度{matched.depth}，{kind}",
+        id=matched.id,
+        pole=matched.orig_pole,
+        line=matched.line,
+        depth=matched.depth,
+        parent_id=matched.parent_id,
+        parent_pole=by_id[matched.parent_id].orig_pole if matched.parent_id and matched.parent_id in by_id else "电源侧",
+        children=[{"id": c.id, "pole": c.orig_pole} for c in children],
+        siblings=[{"id": s.id, "pole": s.orig_pole} for s in siblings],
+        load_kva=round(matched.load_kva, 1),
+        is_leaf=len(children) == 0,
+        is_branch_point=len(children) > 1,
+    )
 
 
 def _generate_dispatch(
@@ -423,12 +444,13 @@ def _generate_dispatch(
 
 **预计巡查：** 建议携带望远镜、照相机，做好记录。"""
 
-    return {
-        "line": line,
-        "fault_section": section_str,
-        "fault_type": fault_type,
-        "suggestion": suggestion,
-    }
+    return tool_ok(
+        "派工建议已生成",
+        line=line,
+        fault_section=section_str,
+        fault_type=fault_type,
+        suggestion=suggestion,
+    )
 
 
 def _list_history(line: str = None, limit: int = 5) -> dict:
@@ -436,10 +458,11 @@ def _list_history(line: str = None, limit: int = 5) -> dict:
     if line:
         events = [e for e in events if e.line == line]
     recent = events[-limit:][::-1]
-    return {
-        "total": len(events),
-        "line": line or "全部",
-        "events": [
+    return tool_ok(
+        f"共 {len(events)} 条历史事件（{line or '全部拓扑'}），返回最近 {len(recent)} 条",
+        total=len(events),
+        line=line or "全部",
+        events=[
             {
                 "event_id": e.event_id,
                 "line": e.line,
@@ -452,4 +475,4 @@ def _list_history(line: str = None, limit: int = 5) -> dict:
             }
             for e in recent
         ],
-    }
+    )

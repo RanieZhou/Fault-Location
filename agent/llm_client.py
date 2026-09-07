@@ -49,6 +49,8 @@ _DEFAULTS = {
     },
 }
 
+KNOWN_PROVIDERS: frozenset[str] = frozenset(_DEFAULTS.keys())
+
 
 def resolve_config(provider: str) -> tuple[str, str, str]:
     """

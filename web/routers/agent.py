@@ -1,30 +1,28 @@
 # -*- coding: utf-8 -*-
 """web/routers/agent.py — LLM Agent对话API（SSE流式，支持工具调用）"""
 import json
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from typing import Optional
 
+from core.models import AgentChatRequest
+from agent.llm_client import KNOWN_PROVIDERS
+
 router = APIRouter()
+# 输入模型用 core.models.AgentChatRequest（messages: list[AgentMessage]），
+# 不再在这里重复定义一个宽松的 list[dict] 版本。
 
 
-class ChatRequest(BaseModel):
-    messages: list[dict]       # [{role: user|assistant, content: ...}]
-    provider: str = "deepseek" # deepseek | qwen | openai
-    line: Optional[str] = None # 当前上下文线路（可选）
-
-
-async def _sse_generator(messages: list[dict], provider: str):
+async def _sse_generator(messages: list[dict], provider: str, line: Optional[str] = None):
     """将 graph.run_agent 的事件转换为 SSE 格式"""
     from agent.graph import run_agent
-    async for event in run_agent(messages, provider=provider):
+    async for event in run_agent(messages, provider=provider, line=line):
         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
 
 @router.post("/chat")
-async def agent_chat(req: ChatRequest):
+async def agent_chat(req: AgentChatRequest):
     """
     Agent 对话（SSE 流式输出）。
     事件类型：
@@ -34,8 +32,14 @@ async def agent_chat(req: ChatRequest):
       - {type: "done"} 完成
       - {type: "error", content: "..."} 错误
     """
+    if req.provider.lower() not in KNOWN_PROVIDERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"未知的 provider: {req.provider}，支持：{sorted(KNOWN_PROVIDERS)}",
+        )
+    messages = [m.model_dump() for m in req.messages]
     return StreamingResponse(
-        _sse_generator(req.messages, req.provider),
+        _sse_generator(messages, req.provider, req.line),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
