@@ -117,6 +117,12 @@ class FaultLocateRequest(BaseModel):
     alarm_points: list[str] = Field(..., description="报警监测点列表（node_id 或 label）")
     fault_type: Optional[str] = Field(None, description="已知故障类型，可选")
     event_time: Optional[str] = Field(None, description="该次事件发生时间，可选——用于精确关联电气量原始记录（同一监测点历史上可能有多次不同事件），不提供则电气量分析取该点最新一条记录")
+    alarm_severity: dict[str, float] = Field(
+        default_factory=dict,
+        description="可选：node_id→电气量异常评分(0-100)，覆盖范围不限于报警点本身——"
+                     "同一报警前沿下有多个未报警的候选分支时，用这份评分在候选之间做区分和排序。"
+                     "不提供或没有区分度时，完全退化为纯拓扑结构判断，不影响原有行为。",
+    )
 
 
 class FaultSection(BaseModel):
@@ -125,6 +131,7 @@ class FaultSection(BaseModel):
     from_id: str
     to_id: str
     confidence: str            # high | medium | low
+    severity_score: Optional[float] = None   # 该候选下游节点的电气量异常评分（有电气量证据时才有值）
 
 
 class FaultLocateResponse(BaseModel):

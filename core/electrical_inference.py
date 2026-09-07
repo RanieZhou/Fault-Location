@@ -255,6 +255,7 @@ def infer_fault_from_event(topo_id: str, event_id: str) -> InferResult:
 
     fault_result = locate_fault(FaultLocateRequest(
         line=topo_id, alarm_points=inferred_alarm_points, event_time=event_meta["timestamp"] or None,
+        alarm_severity={na.node_id: na.severity_score for na in node_analyses},
     ))
     # 用刚算好的电气量分析直接覆盖，避免 locate_fault 内部再重新查一遍
     fault_result.electrical_analysis = _summarize(node_analyses)
@@ -378,6 +379,44 @@ def clean_pole_identifier(raw: Any) -> str:
     # 剥离尾部修饰词
     s = re.sub(r"[大小支杆开关箱变出线环网柜]+$", "", s).strip()
     return s or str(raw or "").strip()
+
+
+def compute_severity_map(records: list[dict]) -> dict[str, float]:
+    """
+    生产监测数据没有独立的历史基线，这里用"同一批记录里、同一相位电压的中位数"
+    作为该相的正常基准——物理假设是同一时刻发生故障时只有少数监测点会偏离，多数
+    仍是正常水平，中位数不会被少数故障点带偏。每个节点的评分取三相里偏离基准
+    最严重的那一相的跌落百分比（0-100，越高越异常），缺相直接记满分。
+    这份评分覆盖记录里出现过的所有节点（不只是已判定异常的），供 fault_locator
+    在多个未报警的候选分支之间做区分排序用；同一 node_id 出现多条记录时取最严重的一条。
+    """
+    import statistics
+
+    phase_vals: dict[str, list[float]] = {"a": [], "b": [], "c": []}
+    for r in records:
+        for ph in ("a", "b", "c"):
+            v = r.get(f"u{ph}")
+            if v is not None and v > 0:
+                phase_vals[ph].append(v)
+    medians = {ph: statistics.median(vals) for ph, vals in phase_vals.items() if vals}
+    if not medians:
+        return {}
+
+    scores: dict[str, float] = {}
+    for r in records:
+        node_id = r.get("node_id")
+        if not node_id:
+            continue
+        worst = 0.0
+        for ph in ("a", "b", "c"):
+            median = medians.get(ph)
+            if not median or median <= 0:
+                continue
+            v = r.get(f"u{ph}")
+            drop = 100.0 if v is None else max(0.0, (median - v) / median * 100)
+            worst = max(worst, drop)
+        scores[node_id] = max(scores.get(node_id, 0.0), round(min(100.0, worst), 1))
+    return scores
 
 
 def _match_col(cols: list[str], keywords: list[str]) -> str | None:
@@ -610,6 +649,7 @@ def reproduce_monitoring_event(event_id: str) -> dict:
             line=topo_id,
             alarm_points=raw_inferred,
             event_time=timestamp,
+            alarm_severity=compute_severity_map(records),
         )
         locate_res = locate_fault(req)
 

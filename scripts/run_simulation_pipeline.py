@@ -88,6 +88,7 @@ def test_pipeline():
         "场景3: T接工业支线故障 (N02 -> B1_02 之间故障)",
         "场景4: 多分支农业支线明确短路 (B3_01 下游故障)",
         "场景5: 多分支盲区歧义测试 (N04 下游3分支辨识)",
+        "场景6: electrical证据消歧 (N02下游2分支，B1_02正常/N04轻微异常)",
     ]
 
     # /monitoring/events 接口按时间倒序返回，这里按时间戳升序重排后再对应场景名，
@@ -117,7 +118,9 @@ def test_pipeline():
         print(f"  - 算法报警前沿点 (Frontier): {frontiers}")
         print(f"  - 算法候选区段 (Candidate Sections):")
         for s in sections:
-            print(f"      * {s.get('from_pole')}  ->  {s.get('to_pole')} (置信度: {s.get('confidence')})")
+            sev = s.get('severity_score')
+            sev_str = f", 电气量评分: {sev:.0f}" if sev is not None else ""
+            print(f"      * {s.get('from_pole')}  ->  {s.get('to_pole')} (置信度: {s.get('confidence')}{sev_str})")
         print(f"  - 全局置信度: {conf}")
         print(f"  - 算法研判备注: {note}")
 

@@ -77,16 +77,31 @@ def _find_frontier(alarmed_ids: set[str], ancestor_map: dict[str, set[str]]) -> 
 # 候选区段推断
 # ════════════════════════════════════════════════
 
+# 电气量证据判定阈值：最高分至少要到这个绝对水平，且比次高分拉开这么多，
+# 才认为"这份评分真的能区分出哪条分支更可能故障"，否则视为噪声、不采信。
+_SEVERITY_MIN_SCORE = 8.0
+_SEVERITY_GAP = 15.0
+
+
 def _get_candidate_sections(
     frontier_ids: list[str],
     children_map: dict[str, list[str]],
     nodes: dict[str, NodeModel],
+    severity_map: dict[str, float] | None = None,
 ) -> tuple[list[FaultSection], str, str]:
     """
     对每个前沿节点，其下游第一段即为候选故障区段。
+    severity_map（可选）：{node_id: 电气量异常评分0-100}，覆盖范围可以是任意监测点
+    （不限于报警点本身）——同一前沿下有多个未报警的候选分支、纯拓扑结构无法区分时，
+    用这份评分挑出真正偏离得更明显的那条分支。不提供、或分支之间评分没有明确区分度
+    （见 _SEVERITY_MIN_SCORE/_SEVERITY_GAP）时，完全退化为原来的纯拓扑判断。
     返回 (sections, confidence, note)
     """
-    sections = []
+    severity_map = severity_map or {}
+    sections: list[FaultSection] = []
+    evidence_notes: list[str] = []
+    all_groups_resolved = True
+
     for fid in frontier_ids:
         children = children_map.get(fid, [])
         fnode = nodes.get(fid)
@@ -101,21 +116,54 @@ def _get_candidate_sections(
                 to_id="",
                 confidence="low",
             ))
-        else:
-            for cid in children:
-                cnode = nodes.get(cid)
-                if cnode:
-                    sections.append(FaultSection(
-                        from_pole=fnode.orig_pole,
-                        to_pole=cnode.orig_pole,
-                        from_id=fid,
-                        to_id=cid,
-                        confidence="high" if len(children) == 1 else "medium",
-                    ))
+            all_groups_resolved = False
+            continue
+
+        branch_sections = [
+            FaultSection(
+                from_pole=fnode.orig_pole,
+                to_pole=cnode.orig_pole,
+                from_id=fid,
+                to_id=cid,
+                confidence="high" if len(children) == 1 else "medium",
+                severity_score=severity_map.get(cid),
+            )
+            for cid in children if (cnode := nodes.get(cid))
+        ]
+
+        if len(branch_sections) > 1:
+            scored = [s for s in branch_sections if s.severity_score is not None]
+            scored.sort(key=lambda s: s.severity_score, reverse=True)
+            if (
+                len(scored) >= 2
+                and scored[0].severity_score >= _SEVERITY_MIN_SCORE
+                and scored[0].severity_score - scored[1].severity_score >= _SEVERITY_GAP
+            ):
+                # 有明确区分度：电气量证据挑出的分支排最前、置信度提到high，
+                # 其余分支降级为low（不是排除，只是变得不太可能）
+                top_id = scored[0].to_id
+                branch_sections.sort(key=lambda s: 0 if s.to_id == top_id else 1)
+                for s in branch_sections:
+                    s.confidence = "high" if s.to_id == top_id else "low"
+                evidence_notes.append(
+                    f"{fnode.orig_pole}下游有{len(branch_sections)}条分支，"
+                    f"其中{nodes[top_id].orig_pole}"
+                    f"电气量异常评分（{scored[0].severity_score:.0f}）明显高于其他分支"
+                    f"（次高{scored[1].severity_score:.0f}），判断为最可能的故障区段"
+                )
+            else:
+                all_groups_resolved = False
+        sections.extend(branch_sections)
 
     if not sections:
         note = "无法推断候选区段"
         conf = "low"
+    elif evidence_notes and all_groups_resolved:
+        conf = "high"
+        note = "；".join(evidence_notes)
+    elif evidence_notes:
+        conf = "medium"
+        note = "；".join(evidence_notes) + "；其余候选区段电气量证据不足以区分，仍建议人工巡查确认"
     elif len(sections) == 1:
         only = sections[0]
         if only.confidence == "high":
@@ -194,7 +242,7 @@ def locate_fault(req: FaultLocateRequest) -> FaultLocateResponse:
 
     # 3. 推断候选区段
     sections, conf, note = _get_candidate_sections(
-        frontier_ids, children_map, nodes_map
+        frontier_ids, children_map, nodes_map, severity_map=req.alarm_severity
     )
 
     if unresolved:
