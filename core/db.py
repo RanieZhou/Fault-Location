@@ -290,23 +290,34 @@ def get_all_events(line: str | None = None) -> list[HistoryEvent]:
 
 def create_custom_topology(
     topo_id: str, name: str,
-    nodes: list[dict],   # [{"node_id":..., "label":...}, ...]
-    edges: list[dict],   # [{"from_id":..., "to_id":..., "length_km": 可选}, ...]
+    nodes: list[dict],   # [{"node_id":..., "label":..., "is_monitor_point": 可选}, ...]
+    edges: list[dict],   # [{"from_id":..., "to_id":..., "length_km": 可选, "resistance_ohm": 可选, "reactance_ohm": 可选}, ...]
 ) -> None:
     """新建一个自定义拓扑并写入全部节点/边（一次性写入，upload接口用）。
-    边表如果自带length_km（比如原始表格本身就是"起点/终点/长度"三列一起给的），
-    直接落库，不用上传完拓扑再回头单独补一遍长度。"""
+    边表如果自带length_km、阻抗参数，节点表如果自带is_monitor_point，
+    直接落库，不用上传完拓扑再回头单独补一遍。"""
     with _conn() as conn:
         conn.execute(
             "INSERT INTO custom_topologies (id, name) VALUES (?, ?)", (topo_id, name)
         )
         conn.executemany(
-            "INSERT INTO custom_nodes (topology_id, node_id, label, is_monitor_point) VALUES (?, ?, ?, 0)",
-            [(topo_id, n["node_id"], n.get("label") or n["node_id"]) for n in nodes],
+            "INSERT INTO custom_nodes (topology_id, node_id, label, is_monitor_point) VALUES (?, ?, ?, ?)",
+            [(topo_id, n["node_id"], n.get("label") or n["node_id"], 1 if n.get("is_monitor_point") else 0) for n in nodes],
         )
         conn.executemany(
-            "INSERT INTO custom_edges (topology_id, from_id, to_id, length_km) VALUES (?, ?, ?, ?)",
-            [(topo_id, e["from_id"], e["to_id"], e.get("length_km") or 0.0) for e in edges],
+            """INSERT INTO custom_edges (topology_id, from_id, to_id, length_km, resistance_ohm, reactance_ohm)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    topo_id,
+                    e["from_id"],
+                    e["to_id"],
+                    e.get("length_km") or 0.0,
+                    e.get("resistance_ohm") or 0.0,
+                    e.get("reactance_ohm") or 0.0,
+                )
+                for e in edges
+            ],
         )
 
 

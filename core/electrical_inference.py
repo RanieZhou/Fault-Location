@@ -369,10 +369,14 @@ import re
 from typing import Any
 
 def clean_pole_identifier(raw: Any) -> str:
-    """从监测点原始名称（如'10kV松平线27.3.88.2.2.1小'）提取规范杆号/母线名"""
+    """从监测点原始名称提取规范杆号/母线名，兼容任意线路前缀和尾缀"""
     s = str(raw or "").strip()
-    s = re.sub(r"^(?:10\s*k+v)?(?:松平线|松坪线|火龙线|北冲线|极乐村线|邵九线)?#?", "", s, flags=re.I).strip()
-    s = re.sub(r"[大小支杆]+$", "", s).strip()
+    # 剥离 10kV / 35kV 等电压等级
+    s = re.sub(r"^(?:\d+\s*k+v)?", "", s, flags=re.I).strip()
+    # 剥离具体的线路名称（如松平线、火龙线、春华线等，只要以'线'结尾的词），以及开头的 #
+    s = re.sub(r"^[\u4e00-\u9fa5A-Za-z0-9]+?(?:线|支线|干线)?#?", "", s).strip()
+    # 剥离尾部修饰词
+    s = re.sub(r"[大小支杆开关箱变出线环网柜]+$", "", s).strip()
     return s or str(raw or "").strip()
 
 
@@ -406,8 +410,6 @@ def ingest_production_monitoring_file(
     按量测时间滑动窗口（60s）自动聚合成多个事件批次，并识别出动作的异常监测点。
     """
     from . import db
-    from .custom_topology import seed_sp_hl_topologies_if_needed
-    seed_sp_hl_topologies_if_needed()
 
     df = None
     fn = filename.lower()
@@ -461,17 +463,14 @@ def ingest_production_monitoring_file(
         first_time = group_df[time_col].iloc[0]
         target_topo = topology_id
         if not target_topo or target_topo not in topos:
-            sample_name = str(group_df[node_name_col].iloc[0])
-            if any(k in sample_name for k in ("松平", "松坪")):
-                target_topo = "ct_sp" if "ct_sp" in topos else (list(topos.keys())[0] if topos else "ct_sp")
-            elif any(k in sample_name for k in ("火龙", "HL")):
-                target_topo = "ct_hl" if "ct_hl" in topos else (list(topos.keys())[0] if topos else "ct_hl")
-            else:
-                target_topo = list(topos.keys())[0] if topos else "default"
+            target_topo = list(topos.keys())[0] if topos else "default"
 
         topo_name = topos.get(target_topo, target_topo)
         clean_time_str = str(first_time).replace("-", "").replace(":", "").replace(" ", "_")
         event_id = f"evt_{clean_time_str}_{group_idx+1}"
+
+        # 获取该拓扑的实际节点以建立精确映射
+        topo_nodes = db.get_custom_nodes(target_topo)
 
         records = []
         abnormal_poles = []
@@ -480,6 +479,22 @@ def ingest_production_monitoring_file(
         for row_idx, (_, r) in enumerate(group_df.iterrows()):
             node_name = str(r[node_name_col]).strip()
             clean_pole = clean_pole_identifier(node_name)
+
+            # 智能映射到拓扑 node_id
+            matched_id = clean_pole
+            for tn in topo_nodes:
+                nid = tn["node_id"]
+                nlabel = tn["label"]
+                if nid.lower() == node_name.lower() or nid.lower() == clean_pole.lower():
+                    matched_id = nid
+                    break
+                if nlabel == node_name or clean_pole_identifier(nlabel) == clean_pole:
+                    matched_id = nid
+                    break
+                if nid in node_name or (clean_pole and clean_pole in nlabel) or nlabel in node_name:
+                    matched_id = nid
+                    break
+
             device_type = str(r[device_type_col]).strip() if device_type_col else "配电线路"
             terminal_status = str(r[terminal_status_col]).strip() if terminal_status_col else "正常"
             line_status = str(r[line_status_col]).strip() if line_status_col else "正常"
@@ -516,11 +531,11 @@ def ingest_production_monitoring_file(
                     reasons.append(f"{ph}相严重低电压({val}kV)")
 
             if is_abnormal:
-                abnormal_poles.append(clean_pole)
+                abnormal_poles.append(matched_id)
 
             records.append({
                 "record_no": row_idx + 1,
-                "node_id": clean_pole,
+                "node_id": matched_id,
                 "node_name": node_name,
                 "device_type": device_type,
                 "terminal_status": terminal_status,

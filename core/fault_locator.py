@@ -156,13 +156,22 @@ def locate_fault(req: FaultLocateRequest) -> FaultLocateResponse:
         result = resolve_pole(raw_pole.strip(), line=req.line)
         clean_id = result[1] if result and result[1] in nodes_map else None
         if not clean_id:
-            # resolve_pole 没找到，或者找到的不属于这条线路/拓扑——
-            # 再直接在本线路的节点里按 orig_pole/id 兜底一次
-            clean_id = next(
-                (nid for nid, n in nodes_map.items()
-                 if n.orig_pole == raw_pole.strip() or nid == raw_pole.strip()),
-                None
-            )
+            raw_s = raw_pole.strip()
+            import re
+            clean_s = re.sub(r"^(?:\d+\s*k+v)?", "", raw_s, flags=re.I).strip()
+            clean_s = re.sub(r"^[\u4e00-\u9fa5A-Za-z0-9]+?(?:线|支线|干线)?#?", "", clean_s).strip()
+            clean_s = re.sub(r"[大小支杆开关箱变出线环网柜]+$", "", clean_s).strip()
+
+            for nid, n in nodes_map.items():
+                if nid.lower() == raw_s.lower() or n.orig_pole == raw_s:
+                    clean_id = nid
+                    break
+                if clean_s and (nid.lower() == clean_s.lower() or clean_s in n.orig_pole):
+                    clean_id = nid
+                    break
+                if nid in raw_s or (n.orig_pole and (raw_s in n.orig_pole or n.orig_pole in raw_s)):
+                    clean_id = nid
+                    break
         if clean_id:
             alarmed_ids.add(clean_id)
         else:

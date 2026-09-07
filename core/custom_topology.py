@@ -40,7 +40,7 @@ def decode_csv_bytes(raw: bytes) -> str:
 
 
 def parse_nodes_csv(text: str) -> list[dict]:
-    """期望列：node_id[,label]。label缺省时用node_id。"""
+    """期望列：node_id[,label,is_monitor_point]。label缺省时用node_id。"""
     reader = csv.DictReader(io.StringIO(text))
     out = []
     for row in reader:
@@ -49,7 +49,10 @@ def parse_nodes_csv(text: str) -> list[dict]:
         if not nid:
             continue
         label = row.get("label") or row.get("名称") or row.get("标签") or nid
-        out.append({"node_id": nid, "label": label})
+        # 支持在节点表里直接指定监测点（1/true/yes/是）
+        is_mon_raw = row.get("is_monitor_point") or row.get("is_monitored") or row.get("是否监测点") or row.get("监测点") or "0"
+        is_mon = str(is_mon_raw).lower() in ("1", "true", "yes", "t", "y", "是")
+        out.append({"node_id": nid, "label": label, "is_monitor_point": is_mon})
     return out
 
 
@@ -71,11 +74,8 @@ def derive_nodes_from_edges(edges: list[dict]) -> list[dict]:
 
 def parse_edges_csv(text: str) -> list[dict]:
     """
-    期望列：from_id,to_id[,length_km 或 length_m 或 length_ft]。
-    长度列可选——很多真实拓扑图纸导出的"线路表"本身就是 起点/终点/长度 一张表
-    （比如IEEE标准测试馈线文档里的"Line Segment Data"），没必要强制用户先传一份
-    只有连接关系的边表、再回头单独逐条补长度，这里直接在边表里认这几种常见列名，
-    传了哪个就用哪个（单位统一换算成km存进去）。
+    期望列：from_id,to_id[,length_km 或 length_m 或 length_ft][,resistance_ohm][,reactance_ohm]。
+    长度/阻抗列可选，传了哪个就用哪个（单位统一换算成km存进去）。
     """
     reader = csv.DictReader(io.StringIO(text))
     out = []
@@ -93,10 +93,31 @@ def parse_edges_csv(text: str) -> list[dict]:
                 except ValueError:
                     pass
                 break
+        res_ohm = None
+        for key in ("resistance_ohm", "resistance", "r", "电阻"):
+            if row.get(key):
+                try:
+                    res_ohm = float(row[key])
+                except ValueError:
+                    pass
+                break
+        react_ohm = None
+        for key in ("reactance_ohm", "reactance", "x", "电抗"):
+            if row.get(key):
+                try:
+                    react_ohm = float(row[key])
+                except ValueError:
+                    pass
+                break
+
+        edge_item = {"from_id": f, "to_id": t}
         if length_km is not None:
-            out.append({"from_id": f, "to_id": t, "length_km": length_km})
-            continue
-        out.append({"from_id": f, "to_id": t})
+            edge_item["length_km"] = length_km
+        if res_ohm is not None:
+            edge_item["resistance_ohm"] = res_ohm
+        if react_ohm is not None:
+            edge_item["reactance_ohm"] = react_ohm
+        out.append(edge_item)
     return out
 
 
@@ -284,49 +305,4 @@ def build_monitor_view(topo_id: str) -> tuple[list[NodeModel], list[EdgeModel]]:
         ))
 
     return node_models, edge_models
-
-
-def seed_sp_hl_topologies_if_needed() -> None:
-    """自动播种10kV松坪线和火龙线拓扑（若尚未存在），确保样例历史数据能立即复现定位。"""
-    from pathlib import Path
-    import pandas as pd
-    from . import db
-
-    topos = {t["id"]: t["name"] for t in db.list_custom_topologies()}
-    nodes_csv = Path("output/nodes.csv")
-    edges_csv = Path("output/edges.csv")
-    if not nodes_csv.exists() or not edges_csv.exists():
-        return
-
-    try:
-        nodes_df = pd.read_csv(nodes_csv)
-        edges_df = pd.read_csv(edges_csv)
-    except Exception:
-        return
-
-    # 1. 松坪线
-    if "ct_sp" not in topos and not any("松坪" in name for name in topos.values()):
-        sp_nodes_df = nodes_df[nodes_df["clean_id"].str.startswith("SP-")]
-        nodes = [{"node_id": "SOURCE", "label": "变电站"}] + [
-            {"node_id": r["clean_id"], "label": str(r["orig_pole"])}
-            for _, r in sp_nodes_df.iterrows()
-        ]
-        sp_edges_df = edges_df[(edges_df["from_id"].str.startswith("SP-") | (edges_df["from_id"] == "SOURCE")) & (edges_df["to_id"].str.startswith("SP-"))]
-        edges = [{"from_id": r["from_id"], "to_id": r["to_id"], "length_km": 1.0} for _, r in sp_edges_df.iterrows()]
-        db.create_custom_topology("ct_sp", "10kV 松坪线", nodes, edges)
-        monitor_ids = [r["clean_id"] for _, r in sp_nodes_df.iterrows()]
-        db.update_custom_monitor_points("ct_sp", monitor_ids, True)
-
-    # 2. 火龙线
-    if "ct_hl" not in topos and not any("火龙" in name for name in topos.values()):
-        hl_nodes_df = nodes_df[nodes_df["clean_id"].str.startswith("HL-")]
-        nodes = [{"node_id": "SOURCE", "label": "变电站"}] + [
-            {"node_id": r["clean_id"], "label": str(r["orig_pole"])}
-            for _, r in hl_nodes_df.iterrows()
-        ]
-        hl_edges_df = edges_df[(edges_df["from_id"].str.startswith("HL-") | (edges_df["from_id"] == "SOURCE")) & (edges_df["to_id"].str.startswith("HL-"))]
-        edges = [{"from_id": r["from_id"], "to_id": r["to_id"], "length_km": 1.0} for _, r in hl_edges_df.iterrows()]
-        db.create_custom_topology("ct_hl", "10kV 火龙线", nodes, edges)
-        monitor_ids = [r["clean_id"] for _, r in hl_nodes_df.iterrows()]
-        db.update_custom_monitor_points("ct_hl", monitor_ids, True)
 
