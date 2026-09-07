@@ -42,11 +42,11 @@
 
   // ======================== 边表模板预览 ========================
   const TEMPLATE_ROWS = [
-    ['变电站', '1号杆', '0.6'],
-    ['1号杆', '2号杆', '0.9'],
-    ['2号杆', '3号杆', '0.5'],
-    ['2号杆', '7号杆', '1.1'],
-    ['3号杆', '4号杆', '0.4'],
+    ['变电站', '1号杆', '0.6', '', ''],
+    ['1号杆', '2号杆', '0.9', '', '监测点'],
+    ['2号杆', '3号杆', '0.5', '监测点', ''],
+    ['2号杆', '7号杆', '1.1', '监测点', '监测点'],
+    ['3号杆', '4号杆', '0.4', '', '监测点'],
   ];
 
   window.ctToggleTemplatePreview = function() {
@@ -57,17 +57,20 @@
     el.innerHTML = `
       <div style="border:1px solid var(--border-color,rgba(255,255,255,0.08));border-radius:8px;padding:10px;background:var(--bg-card)">
         <table class="data-table" style="margin-bottom:8px">
-          <thead><tr><th>from_id</th><th>to_id</th><th>length_km</th></tr></thead>
+          <thead><tr><th>from_id</th><th>to_id</th><th>length_km</th><th>from_is_monitor</th><th>to_is_monitor</th></tr></thead>
           <tbody>
-            ${TEMPLATE_ROWS.map(([f, t, l]) => `
-              <tr><td class="mono">${escapeHtml(f)}</td><td class="mono">${escapeHtml(t)}</td><td>${escapeHtml(l)}</td></tr>
+            ${TEMPLATE_ROWS.map(([f, t, l, fm, tm]) => `
+              <tr><td class="mono">${escapeHtml(f)}</td><td class="mono">${escapeHtml(t)}</td><td>${escapeHtml(l)}</td>
+                <td>${fm ? `<span style="color:var(--cyan)">${fm}</span>` : ''}</td>
+                <td>${tm ? `<span style="color:var(--cyan)">${tm}</span>` : ''}</td></tr>
             `).join('')}
           </tbody>
         </table>
         <div style="font-size:11px;color:var(--text-muted);line-height:1.6">
           上传后会自动识别：<span style="color:var(--cyan)">变电站</span>没有入边，作为电源根节点；
-          <span style="color:var(--cyan)">2号杆</span>同时是<span style="color:var(--cyan)">3号杆</span>和<span style="color:var(--cyan)">7号杆</span>的父节点，会形成一条分支——
-          不用单独传节点表，5个节点都从这张边表里自动反推出来。
+          <span style="color:var(--cyan)">2号杆</span>同时是<span style="color:var(--cyan)">3号杆</span>和<span style="color:var(--cyan)">7号杆</span>的父节点，会形成一条分支；
+          <span style="color:var(--cyan)">2号杆/4号杆/7号杆</span>标了监测点，上传后直接生效，不用再手动逐个勾选——
+          不用单独传节点表，5个节点和监测点标记都从这张边表里自动反推出来。
         </div>
       </div>`;
     el.style.display = 'block';

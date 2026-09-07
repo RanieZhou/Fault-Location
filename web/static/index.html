@@ -580,7 +580,7 @@
                     </span>
                   </label>
                   <input class="input" type="file" id="ct-upload-edges" accept=".csv">
-                  <div class="form-hint">列：from_id,to_id[,length_km 或 length_m 或 length_ft]（长度列可选，直接带上就不用上传后再补）；唯一没有入边的节点会被当作电源根节点</div>
+                  <div class="form-hint">列：from_id,to_id[,length_km 或 length_m 或 length_ft][,resistance_ohm][,reactance_ohm][,from_is_monitor][,to_is_monitor]。长度/阻抗/监测点标记都可选，直接带上就不用上传后再补/再手动勾选；唯一没有入边的节点会被当作电源根节点</div>
                   <div id="ct-template-preview" style="display:none;margin-top:8px"></div>
                 </div>
                 <div class="form-group">

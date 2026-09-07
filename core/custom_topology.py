@@ -61,21 +61,32 @@ def derive_nodes_from_edges(edges: list[dict]) -> list[dict]:
     节点表是可选的——很多真实拓扑数据本来就只有一张"起点/终点[/长度]"的线路表
     （节点是隐含在这张表里的，不需要单独再列一遍），这种情况下节点表和边表
     实际上可以合二为一，直接从边表出现过的所有id反推出节点列表，label默认用id本身。
+    is_monitor_point 同理从边表里的 from_is_monitor/to_is_monitor 标记反推——
+    同一个node_id可能在多条边里出现（比如既是某条边的to_id又是另一条边的
+    from_id），只要任意一条边标记它是监测点，就认为它是（OR语义，避免某一条
+    边漏标把之前正确的标记覆盖掉）。
     """
     seen = []
     seen_set = set()
+    is_monitor: dict[str, bool] = {}
     for e in edges:
-        for nid in (e["from_id"], e["to_id"]):
+        for nid, mon_key in ((e["from_id"], "from_is_monitor"), (e["to_id"], "to_is_monitor")):
             if nid not in seen_set:
                 seen_set.add(nid)
                 seen.append(nid)
-    return [{"node_id": nid, "label": nid} for nid in seen]
+            if e.get(mon_key):
+                is_monitor[nid] = True
+    return [{"node_id": nid, "label": nid, "is_monitor_point": is_monitor.get(nid, False)} for nid in seen]
 
 
 def parse_edges_csv(text: str) -> list[dict]:
     """
-    期望列：from_id,to_id[,length_km 或 length_m 或 length_ft][,resistance_ohm][,reactance_ohm]。
+    期望列：from_id,to_id[,length_km 或 length_m 或 length_ft][,resistance_ohm][,reactance_ohm]
+    [,from_is_monitor][,to_is_monitor]。
     长度/阻抗列可选，传了哪个就用哪个（单位统一换算成km存进去）。
+    from_is_monitor/to_is_monitor 同样可选（1/true/yes/是）——不传单独的节点表时，
+    这是唯一能在边表里直接标出"这个端点装了监测设备"的地方，配合
+    derive_nodes_from_edges 使用，省掉上传后再手动逐个勾选监测点这一步。
     """
     reader = csv.DictReader(io.StringIO(text))
     out = []
@@ -110,7 +121,13 @@ def parse_edges_csv(text: str) -> list[dict]:
                     pass
                 break
 
-        edge_item = {"from_id": f, "to_id": t}
+        def _is_true(v: str) -> bool:
+            return v.lower() in ("1", "true", "yes", "t", "y", "是")
+
+        from_mon = _is_true(row.get("from_is_monitor") or row.get("起点监测点") or row.get("起点是否监测点") or "")
+        to_mon = _is_true(row.get("to_is_monitor") or row.get("终点监测点") or row.get("终点是否监测点") or "")
+
+        edge_item = {"from_id": f, "to_id": t, "from_is_monitor": from_mon, "to_is_monitor": to_mon}
         if length_km is not None:
             edge_item["length_km"] = length_km
         if res_ohm is not None:
