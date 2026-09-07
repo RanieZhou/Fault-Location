@@ -49,6 +49,11 @@ window.navTo = function(viewId) {
     });
   }
   if (viewId === 'topology') {
+    // 拓扑监控页默认展示的是线路结构本身，不应该一直挂着上一次定位/推理
+    // 遗留下来的告警高亮——用户不点进具体某次结果时，根本看不出那是什么时候
+    // 的状态。这里先清空，"在拓扑图中查看"这类入口会在这之后同步调用
+    // setFaultSection 重新设置高亮，执行顺序上不会被这次清空覆盖掉。
+    if (window.topoReset) window.topoReset();
     fillCustomTopoOptions('topo-line-select').then(() => {
       if (currentLine) buildQuickNodeList(currentLine);
     });
