@@ -285,28 +285,22 @@
     c.scrollTop = c.scrollHeight;
   }
 
-  // ======================== Markdown简单渲染 ========================
-  function markdownToHtml(md) {
-    let html = escapeHtml(md)
-      // 代码块
-      .replace(/```[\w]*\n([\s\S]*?)```/g, '<pre style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;overflow-x:auto;font-size:11px;color:#00d4ff;font-family:\'JetBrains Mono\',monospace;margin:8px 0">$1</pre>')
-      // 行内代码
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      // 粗体
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      // 斜体
-      .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      // 标题
-      .replace(/^### (.+)$/gm, '<div style="font-size:12px;font-weight:700;color:var(--cyan);margin:10px 0 4px">$1</div>')
-      .replace(/^## (.+)$/gm,  '<div style="font-size:13px;font-weight:700;color:var(--text-primary);margin:12px 0 6px">$1</div>')
-      // 列表
-      .replace(/^[•·]\s(.+)$/gm, '<div style="padding-left:12px;margin:2px 0">• $1</div>')
-      .replace(/^[-*]\s(.+)$/gm, '<div style="padding-left:12px;margin:2px 0">• $1</div>')
-      // 换行
-      .replace(/\n\n/g, '</p><p style="margin-top:6px">')
-      .replace(/\n/g, '<br>');
+  // ======================== Markdown渲染（marked + DOMPurify） ========================
+  // 之前是手写正则拼HTML，不支持表格/有序列表/嵌套列表，标题这些遇到LLM输出的
+  // 表格就直接显示成一堆裸的 "| a | b |"。改用真正的Markdown解析库；LLM输出不算
+  // 完全可信内容（可能被工具结果里的异常文本影响、或偶尔生成奇怪的HTML），渲染前
+  // 用 DOMPurify 净化一遍，不直接信任 marked 输出的原始HTML。
+  if (window.marked) {
+    marked.setOptions({ breaks: true, gfm: true });
+  }
 
-    return `<p>${html}</p>`;
+  function markdownToHtml(md) {
+    if (!window.marked || !window.DOMPurify) {
+      // CDN 加载失败时的兜底：至少不要把内容吞掉，退化成纯文本
+      return `<p>${escapeHtml(md).replace(/\n/g, '<br>')}</p>`;
+    }
+    const rawHtml = marked.parse(md || '');
+    return DOMPurify.sanitize(rawHtml);
   }
 
   function escapeHtml(str) {

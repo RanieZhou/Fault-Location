@@ -5,11 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>配网故障定位系统</title>
   <meta name="description" content="10kV配电网智能故障定位Agent系统，支持拓扑可视化、矩阵法定位、LLM智能分析">
-  <link rel="stylesheet" href="/static/css/style.css?v=20260908">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=20260908">
+  <link rel="stylesheet" href="/static/css/style.css?v=20260908b">
   <!-- Bootstrap Icons v1.11 -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <!-- D3.js v7 -->
   <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <!-- marked（Agent对话的Markdown渲染）+ DOMPurify（渲染前净化，防止LLM输出里混入的HTML/脚本被当真执行） -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@18.0.11/lib/marked.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.15/dist/purify.min.js"></script>
 </head>
 <body>
 <div id="app">
@@ -846,7 +850,7 @@
 <script src="/static/js/data.js?v=20260908"></script>
 <script src="/static/js/topology.js?v=20260908"></script>
 <script src="/static/js/api.js?v=20260908"></script>
-<script src="/static/js/agent.js?v=20260908"></script>
+<script src="/static/js/agent.js?v=20260908b"></script>
 <script src="/static/js/custom-topo.js?v=20260908"></script>
 <script src="/static/js/app.js?v=20260908"></script>
 
