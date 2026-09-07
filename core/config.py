@@ -11,7 +11,9 @@ DATA_DIR   = ROOT_DIR / "data"
 
 # 持久化数据库（拓扑/监测点/线路参数/历史电气量数据/故障事件历史 全部存这里，
 # 系统不再依赖任何硬编码的固定线路或固定数据文件——见 core/custom_topology.py、
-# core/electrical_inference.py）
+# core/electrical_inference.py）。原来用SQLite（单文件app.db），现在迁移到MySQL，
+# 这个路径不再被db.py使用，只留着给旧数据迁移脚本（scripts/migrate_sqlite_to_mysql.py）
+# 读取原始数据用。
 DB_PATH = DATA_DIR / "app.db"
 
 
@@ -47,6 +49,13 @@ class Settings(BaseSettings):
     # ── 电网参数 ──────────────────────────────────────────────
     voltage_kv: float = 10.0           # 标称电压（kV）
     grounding: str = "direct"          # direct | isolated | small_resistance
+
+    # ── MySQL 连接（取代此前的SQLite单文件） ─────────────────────
+    mysql_host: str = "127.0.0.1"
+    mysql_port: int = 3306
+    mysql_user: str = "root"
+    mysql_password: str = "123456"
+    mysql_database: str = "fault_location"
 
     class Config:
         env_file = str(ROOT_DIR / ".env")
