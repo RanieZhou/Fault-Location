@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import ReactFlow, {
   Background,
   Controls,
@@ -21,6 +21,7 @@ import {
   Drawer,
   Empty,
   Input,
+  InputNumber,
   List,
   Modal,
   Segmented,
@@ -34,7 +35,7 @@ import {
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { apiErrorMessage } from '../../api/client'
-import { getEdgesTable, type EdgeTableRow } from '../../api/edges'
+import { getEdgesTable, updateEdgeConfig, type EdgeTableRow } from '../../api/edges'
 import { deleteMonitor, listMonitors, type Monitor } from '../../api/monitors'
 import { getGraph, getNetwork, getValidation, setSource } from '../../api/networks'
 import type { GraphEdge, GraphNode, NetworkGraph, NetworkOut, TopologyValidationSummary } from '../../api/types'
@@ -42,6 +43,8 @@ import { layoutWithDagre, routeEdgeTypes } from '../../components/dagreLayout'
 import { EdgeConfigModal, type EdgeConfigInitial } from '../../components/EdgeConfigModal'
 import { MonitorModal } from '../../components/MonitorModal'
 import { topologyNodeTypes, type TopologyNodeData } from '../../components/TopologyNode'
+import { useCurrentNetwork } from '../../state/CurrentNetworkContext'
+import { palette } from '../../theme'
 
 const { Text, Title } = Typography
 
@@ -78,11 +81,11 @@ function buildElements(
       label: e.edge_key ?? undefined,
       selected: selectedEdgeIds.has(e.edge_id),
       style: {
-        stroke: isOpen ? '#bfbfbf' : emphasize ? '#fa541c' : '#1677ff',
+        stroke: isOpen ? palette.mutedEdge : emphasize ? palette.warningAccent : palette.primary,
         strokeDasharray: isOpen || !directed ? '6 4' : undefined,
         strokeWidth: emphasize ? 3 : 1.5,
       },
-      markerEnd: directed && !isOpen ? { type: MarkerType.ArrowClosed, color: '#1677ff' } : undefined,
+      markerEnd: directed && !isOpen ? { type: MarkerType.ArrowClosed, color: palette.primary } : undefined,
     }
   })
 
@@ -99,14 +102,14 @@ export function TopologyWorkspace() {
 
 function TopologyWorkspaceInner() {
   const { networkId } = useParams<{ networkId: string }>()
-  const navigate = useNavigate()
   const { fitView } = useReactFlow()
+  const { setCurrentNetwork } = useCurrentNetwork()
 
   const [network, setNetworkState] = useState<NetworkOut | null>(null)
   const [graph, setGraph] = useState<NetworkGraph | null>(null)
   const [loading, setLoading] = useState(false)
   const [highlightUnconfigured, setHighlightUnconfigured] = useState(false)
-  const [layoutDirection, setLayoutDirection] = useState<'TB' | 'LR'>('TB')
+  const [layoutDirection, setLayoutDirection] = useState<'TB' | 'LR'>('LR')
   const [panelCollapsed, setPanelCollapsed] = useState(false)
 
   const [nodes, setNodes, onNodesChange] = useNodesState<TopologyNodeData>([])
@@ -140,11 +143,14 @@ function TopologyWorkspaceInner() {
       setNetworkState(net)
       setGraph(g)
       setMonitors(m)
+      setCurrentNetwork(net.network_id, net.name)
     } catch (error) {
       message.error(apiErrorMessage(error))
     } finally {
       setLoading(false)
     }
+    // setCurrentNetwork identity is stable (Context), safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [networkId])
 
   useEffect(() => {
@@ -155,6 +161,11 @@ function TopologyWorkspaceInner() {
   // read the latest selection synchronously without depending on it (which
   // would make the effect re-run on every selection change).
   const selectionRef = useRef<{ nodeId: string | null; edgeIds: string[] }>({ nodeId: null, edgeIds: [] })
+  // Only the first graph load for a given network should recenter the
+  // camera. Every later reload (saving one edge/monitor, resolving an
+  // unmatched name, ...) re-runs this same effect and must leave the user's
+  // current pan/zoom alone instead of snapping back to a fitted view.
+  const fittedNetworkIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!graph) return
@@ -183,7 +194,10 @@ function TopologyWorkspaceInner() {
     setSelectedNode(resolvedNode)
     setSelectedEdges(resolvedEdges)
     selectionRef.current = { nodeId: resolvedNode?.node_id ?? null, edgeIds: resolvedEdges.map((e) => e.edge_id) }
-    window.setTimeout(() => fitView({ padding: 0.2, duration: 200 }), 50)
+    if (fittedNetworkIdRef.current !== graph.network_id) {
+      fittedNetworkIdRef.current = graph.network_id
+      window.setTimeout(() => fitView({ padding: 0.2, duration: 200 }), 50)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph])
 
@@ -228,11 +242,21 @@ function TopologyWorkspaceInner() {
       if (!graph) return
       const nodeIds = new Set(params.nodes.map((n) => n.id))
       const edgeIds = new Set(params.edges.map((e) => e.id))
-      const node = graph.nodes.find((n) => nodeIds.has(n.node_id)) ?? null
       const selEdges = graph.edges.filter((e) => edgeIds.has(e.edge_id))
+      // A drag box almost always sweeps up the edges' endpoint nodes too. Edge
+      // batch-config is the point of that gesture, so let edges win the panel
+      // whenever any came along -- only treat this as a node selection when
+      // the box (or click) caught no edges at all.
+      const node = selEdges.length === 0 ? graph.nodes.find((n) => nodeIds.has(n.node_id)) ?? null : null
       selectionRef.current = { nodeId: node?.node_id ?? null, edgeIds: selEdges.map((e) => e.edge_id) }
       setSelectedNode(node)
       setSelectedEdges(selEdges)
+      // A manually collapsed panel has nothing to show; picking something on
+      // the canvas is an explicit request to look at it, so it should never
+      // stay hidden behind a stale collapse from earlier.
+      if (node || selEdges.length > 0) {
+        setPanelCollapsed(false)
+      }
     },
     [graph],
   )
@@ -316,6 +340,29 @@ function TopologyWorkspaceInner() {
     setTableSelectedIds([])
   }
 
+  // Keystroke-level drafts for the table view's inline length editor, kept in
+  // a ref (not state) so typing doesn't re-render the whole table -- only the
+  // committed value on blur/Enter needs to reach edgeTableRows and the server.
+  const lengthDraftsRef = useRef<Record<string, number | null>>({})
+
+  function handleInlineLengthCommit(record: EdgeTableRow) {
+    const draft = lengthDraftsRef.current[record.edge_id]
+    if (draft === undefined || draft === record.length_km) return
+    updateEdgeConfig(record.edge_id, { line_model_id: record.line_model_id, length_km: draft })
+      .then(() => {
+        setEdgeTableRows((rows) =>
+          rows.map((r) =>
+            r.edge_id === record.edge_id ? { ...r, length_km: draft, configured: !!r.line_model_id && !!draft } : r,
+          ),
+        )
+        // The canvas view reads from `graph`, a separate fetch from the edge
+        // table -- without this, a length typed here would only ever show up
+        // after some other action happened to reload the graph.
+        loadGraph()
+      })
+      .catch((error) => message.error(apiErrorMessage(error)))
+  }
+
   const filteredTableRows = edgeTableRows.filter((row) => {
     if (!tableSearch) return true
     const haystack = `${row.edge_key ?? ''} ${row.edge_id} ${row.node_a_key} ${row.node_b_key}`.toLowerCase()
@@ -347,7 +394,26 @@ function TopologyWorkspaceInner() {
       onFilter: (value, record) => record.model_name === value,
       render: (v: string | null) => v ?? '-',
     },
-    { title: '长度 (km)', dataIndex: 'length_km', sorter: (a, b) => (a.length_km ?? -1) - (b.length_km ?? -1) },
+    {
+      title: '长度 (km)',
+      dataIndex: 'length_km',
+      sorter: (a, b) => (a.length_km ?? -1) - (b.length_km ?? -1),
+      render: (_: number | null, record) => (
+        <InputNumber
+          size="small"
+          min={0}
+          step={0.01}
+          style={{ width: 110 }}
+          placeholder="未配置"
+          defaultValue={record.length_km ?? undefined}
+          onChange={(v) => {
+            lengthDraftsRef.current[record.edge_id] = v
+          }}
+          onBlur={() => handleInlineLengthCommit(record)}
+          onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
+        />
+      ),
+    },
     {
       title: '状态',
       dataIndex: 'status',
@@ -399,9 +465,6 @@ function TopologyWorkspaceInner() {
           gap: 12,
         }}
       >
-        <Button onClick={() => navigate('/')} style={{ flexShrink: 0 }}>
-          返回
-        </Button>
         <Title
           level={5}
           style={{ margin: 0, flexShrink: 0, whiteSpace: 'nowrap', maxWidth: 240 }}
@@ -442,12 +505,6 @@ function TopologyWorkspaceInner() {
         )}
         <Button onClick={handleValidate}>校验</Button>
         <Button onClick={() => message.success('拓扑数据已自动保存')}>保存</Button>
-        <Button type="primary" onClick={() => navigate(`/line-models?returnTo=/networks/${networkId}/topology`)}>
-          线路型号管理 →
-        </Button>
-        <Button type="primary" onClick={() => navigate(`/networks/${networkId}/normal-data`)}>
-          正常数据校准 →
-        </Button>
       </div>
 
       <Spin spinning={loading} fullscreen />
@@ -606,9 +663,18 @@ function TopologyWorkspaceInner() {
                   <Descriptions.Item label="线路型号">{selectedEdges[0].model_name ?? '未配置'}</Descriptions.Item>
                   <Descriptions.Item label="长度 (km)">{selectedEdges[0].length_km ?? '未配置'}</Descriptions.Item>
                   <Descriptions.Item label="R / X / C">
-                    {selectedEdges[0].r_ohm != null
-                      ? `${selectedEdges[0].r_ohm.toFixed(3)}Ω / ${selectedEdges[0].x_ohm!.toFixed(3)}Ω / ${selectedEdges[0].c_nf!.toFixed(1)}nF`
-                      : '未配置'}
+                    {selectedEdges[0].r_ohm != null ? (
+                      `${selectedEdges[0].r_ohm.toFixed(3)}Ω / ${selectedEdges[0].x_ohm!.toFixed(3)}Ω / ${selectedEdges[0].c_nf!.toFixed(1)}nF`
+                    ) : selectedEdges[0].r_ohm_per_km != null ? (
+                      <>
+                        {`${selectedEdges[0].r_ohm_per_km.toFixed(3)}Ω / ${selectedEdges[0].x_ohm_per_km!.toFixed(3)}Ω / ${selectedEdges[0].c_nf_per_km!.toFixed(1)}nF`}
+                        <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                          （每 km，缺少长度，暂无法计算该段总参数）
+                        </Text>
+                      </>
+                    ) : (
+                      '未配置'
+                    )}
                   </Descriptions.Item>
                 </Descriptions>
                 <Button

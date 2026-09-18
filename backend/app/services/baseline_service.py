@@ -1,3 +1,4 @@
+import math
 import statistics
 
 import networkx as nx
@@ -13,6 +14,26 @@ NORMAL_FILTER = {
     "line_status": "正常",
     "warning_status": "正常",
 }
+
+
+def _circular_mean_std_deg(values_deg: list[float]) -> tuple[float, float]:
+    """Mean/std for angular data (phase_* signals), per Mardia & Jupp's
+    circular statistics -- a plain arithmetic mean/std is wrong near the
+    0/360 wrap (e.g. mean(359, 1) should be ~0 deg, not the arithmetic 180).
+
+    mean = atan2(mean(sin theta), mean(cos theta))
+    std  = sqrt(-2 * ln(R)), R = mean resultant length, in the same "degrees"
+    scale as the input (matches scipy.stats.circstd's high/low rescaling).
+    """
+    radians = [math.radians(v) for v in values_deg]
+    n = len(radians)
+    mean_sin = sum(math.sin(r) for r in radians) / n
+    mean_cos = sum(math.cos(r) for r in radians) / n
+    mean_deg = math.degrees(math.atan2(mean_sin, mean_cos))
+    r_bar = min(math.sqrt(mean_sin**2 + mean_cos**2), 1.0)
+    r_bar = max(r_bar, 1e-9)  # avoid log(0) for a perfectly uniform spread
+    std_deg = math.degrees(math.sqrt(-2 * math.log(r_bar)))
+    return mean_deg, std_deg
 
 
 def build_baseline(db: Session, network: Network) -> BaselineBuildResult:
@@ -51,13 +72,24 @@ def build_baseline(db: Session, network: Network) -> BaselineBuildResult:
                 continue
             timestamps = [r.timestamp for r in monitor_records if getattr(r, signal) is not None and r.timestamp]
 
+            if signal.startswith("phase_"):
+                mean_value, std_value = _circular_mean_std_deg(values)
+            else:
+                mean_value = statistics.mean(values)
+                std_value = statistics.pstdev(values) if len(values) > 1 else 0.0
+
             db.add(
                 BaselineStat(
                     monitor_id=monitor_id,
                     signal=signal,
                     count=len(values),
-                    mean=statistics.mean(values),
-                    std=statistics.pstdev(values) if len(values) > 1 else 0.0,
+                    mean=mean_value,
+                    std=std_value,
+                    # NOTE: median is left as the plain linear median even for
+                    # phase_* signals. A rigorous circular median exists but
+                    # has no single standard closed form (unlike circular
+                    # mean/std) -- out of scope for this MVP fix, which only
+                    # targets the mean/std computation the spec calls out.
                     median=statistics.median(values),
                     start_time=min(timestamps) if timestamps else None,
                     end_time=max(timestamps) if timestamps else None,

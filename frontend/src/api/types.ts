@@ -46,6 +46,9 @@ export interface GraphEdge {
   length_km: number | null
   line_type: string | null
   model_name: string | null
+  r_ohm_per_km: number | null
+  x_ohm_per_km: number | null
+  c_nf_per_km: number | null
   r_ohm: number | null
   x_ohm: number | null
   c_nf: number | null

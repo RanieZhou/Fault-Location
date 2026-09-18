@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Button,
   Form,
@@ -42,10 +41,6 @@ interface FormValues {
 }
 
 export function LineModelManagement() {
-  const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
-  const returnTo = searchParams.get('returnTo')
-
   const [lineModels, setLineModels] = useState<LineModel[]>([])
   const [loading, setLoading] = useState(false)
   const [typeFilter, setTypeFilter] = useState<string | undefined>(undefined)
@@ -169,12 +164,9 @@ export function LineModelManagement() {
 
   return (
     <div style={{ padding: 24 }}>
-      <Space style={{ marginBottom: 16 }}>
-        {returnTo && <Button onClick={() => navigate(returnTo)}>← 返回拓扑工作台</Button>}
-        <Title level={3} style={{ margin: 0 }}>
-          线路型号管理
-        </Title>
-      </Space>
+      <Title level={3} style={{ marginBottom: 16 }}>
+        线路型号管理
+      </Title>
 
       <Space style={{ marginBottom: 16 }}>
         <Select

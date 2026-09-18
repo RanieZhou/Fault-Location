@@ -27,6 +27,9 @@ class GraphEdge(BaseModel):
     length_km: float | None
     line_type: str | None = None
     model_name: str | None = None
+    r_ohm_per_km: float | None = None
+    x_ohm_per_km: float | None = None
+    c_nf_per_km: float | None = None
     r_ohm: float | None = None
     x_ohm: float | None = None
     c_nf: float | None = None

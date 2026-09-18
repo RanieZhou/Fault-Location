@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Handle, Position, useStore, useUpdateNodeInternals } from 'reactflow'
 import { NODE_HEIGHT, NODE_WIDTH } from './topologyLayoutConstants'
+import { palette } from '../theme'
 
 export interface TopologyNodeData {
   label: string
@@ -39,8 +40,8 @@ export function TopologyNode({ data, id }: { data: TopologyNodeData; id: string 
         justifyContent: 'center',
         padding: '0 10px',
         borderRadius: 6,
-        border: data.isSource ? '2px solid #fa8c16' : '1px solid #1677ff',
-        background: data.isSource ? '#fff7e6' : '#ffffff',
+        border: data.isSource ? `2px solid ${palette.sourceAccent}` : `1px solid ${palette.primary}`,
+        background: data.isSource ? palette.sourceBg : '#ffffff',
         fontSize: 12,
         textAlign: 'center',
         boxShadow: '0 1px 2px rgba(0,0,0,0.08)',

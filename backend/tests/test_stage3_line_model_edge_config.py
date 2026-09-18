@@ -92,6 +92,28 @@ def test_edge_single_config_computes_physics(client: TestClient) -> None:
     assert edge["line_type"] == "overhead"
 
 
+def test_edge_with_model_but_no_length_exposes_per_km_rates_not_totals(client: TestClient) -> None:
+    network_id, graph = _create_network_with_edges(client, [("L001", "#1", "#2", "closed", "")])
+    line_model = _create_line_model(client, r_ohm_per_km=0.2, x_ohm_per_km=0.4, c_nf_per_km=10.0)
+    edge_id = graph["edges"][0]["edge_id"]
+
+    response = client.patch(f"/api/edges/{edge_id}", json={"line_model_id": line_model["line_model_id"]})
+    assert response.status_code == 200
+    assert response.json()["length_km"] is None
+
+    updated_graph = client.get(f"/api/networks/{network_id}/graph").json()
+    edge = next(e for e in updated_graph["edges"] if e["edge_id"] == edge_id)
+    # Length is still missing, so the per-edge totals can't be computed yet ...
+    assert edge["r_ohm"] is None
+    assert edge["x_ohm"] is None
+    assert edge["c_nf"] is None
+    # ... but the model's own per-km rates are already known and must be exposed,
+    # so the UI can show them instead of a bare "not configured".
+    assert edge["r_ohm_per_km"] == 0.2
+    assert edge["x_ohm_per_km"] == 0.4
+    assert edge["c_nf_per_km"] == 10.0
+
+
 def test_edge_config_rejects_disabled_or_missing_line_model(client: TestClient) -> None:
     network_id, graph = _create_network_with_edges(client, [("L001", "#1", "#2", "closed", "")])
     line_model = _create_line_model(client)

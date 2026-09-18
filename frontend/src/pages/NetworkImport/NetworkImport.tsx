@@ -21,12 +21,14 @@ import type { UploadFile } from 'antd/es/upload/interface'
 import { createNetwork, importMapping } from '../../api/networks'
 import { apiErrorMessage } from '../../api/client'
 import type { MappingImportResult, NetworkOut } from '../../api/types'
+import { useCurrentNetwork } from '../../state/CurrentNetworkContext'
 
 const { Dragger } = Upload
 const { Title, Paragraph, Text } = Typography
 
 export function NetworkImport() {
   const navigate = useNavigate()
+  const { setCurrentNetwork } = useCurrentNetwork()
   const [network, setNetwork] = useState<NetworkOut | null>(null)
   const [creating, setCreating] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -39,6 +41,7 @@ export function NetworkImport() {
     try {
       const created = await createNetwork(values)
       setNetwork(created)
+      setCurrentNetwork(created.network_id, created.name)
       message.success(`Network 已创建：${created.network_id}`)
     } catch (error) {
       message.error(apiErrorMessage(error))

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -31,6 +31,7 @@ import {
 import { listMonitors, type Monitor } from '../../api/monitors'
 import { getNetwork } from '../../api/networks'
 import type { NetworkOut } from '../../api/types'
+import { useCurrentNetwork } from '../../state/CurrentNetworkContext'
 
 const { Dragger } = Upload
 const { Title, Paragraph, Text } = Typography
@@ -56,9 +57,23 @@ const FIELD_LABELS: Record<string, string> = {
   timestamp: '量测时间',
 }
 
+function renderStatValue(value: number, signal: string, circularLabel: string) {
+  const isPhase = signal.startsWith('phase_')
+  return (
+    <Space size={4}>
+      <Text>{value.toFixed(3)}{isPhase ? '°' : ''}</Text>
+      {isPhase && (
+        <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+          {circularLabel}
+        </Tag>
+      )}
+    </Space>
+  )
+}
+
 export function NormalDataCalibration() {
   const { networkId } = useParams<{ networkId: string }>()
-  const navigate = useNavigate()
+  const { setCurrentNetwork } = useCurrentNetwork()
 
   const [network, setNetwork] = useState<NetworkOut | null>(null)
   const [mapping, setMapping] = useState<Record<string, string>>({})
@@ -94,6 +109,7 @@ export function NormalDataCalibration() {
       setMonitors(mons)
       setBaseline(b)
       setReadiness(r)
+      setCurrentNetwork(net.network_id, net.name)
     } catch (error) {
       message.error(apiErrorMessage(error))
     }
@@ -179,12 +195,9 @@ export function NormalDataCalibration() {
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 16px' }}>
-      <Space style={{ marginBottom: 16 }}>
-        <Button onClick={() => navigate(`/networks/${networkId}/topology`)}>← 返回拓扑工作台</Button>
-        <Title level={3} style={{ margin: 0 }}>
-          正常数据校准 {network && <Tag>{network.network_id}</Tag>}
-        </Title>
-      </Space>
+      <Title level={3} style={{ marginBottom: 16 }}>
+        正常数据基线 {network && <Tag>{network.network_id}</Tag>}
+      </Title>
 
       <Card title="1. 字段映射配置" style={{ marginBottom: 16 }}>
         <Paragraph type="secondary">将当前生产 Excel 的列名映射到标准字段，而非写死在代码中。</Paragraph>
@@ -290,6 +303,8 @@ export function NormalDataCalibration() {
       >
         <Paragraph type="secondary">
           筛选条件：设备类型=配电线路 且 终端/线路/预警状态=正常，再计算每个监测点、每个信号的 count/mean/std/median。
+          相位类信号（phase_*）的 Mean/Std 使用圆形统计量（circular mean/std，按 atan2(sinθ̄, cosθ̄) 计算，避免
+          359°/0° 环绕导致的错误），Median 目前仍为普通线性中位数。
         </Paragraph>
         {baseline.length === 0 ? (
           <Alert type="info" showIcon message="尚未生成 Baseline" />
@@ -303,8 +318,18 @@ export function NormalDataCalibration() {
               { title: '监测点', dataIndex: 'canonical_name' },
               { title: '信号', dataIndex: 'signal' },
               { title: 'Count', dataIndex: 'count' },
-              { title: 'Mean', dataIndex: 'mean', render: (v: number | null) => v?.toFixed(3) ?? '-' },
-              { title: 'Std', dataIndex: 'std', render: (v: number | null) => v?.toFixed(3) ?? '-' },
+              {
+                title: 'Mean',
+                dataIndex: 'mean',
+                render: (v: number | null, record: BaselineStatOut) =>
+                  v == null ? '-' : renderStatValue(v, record.signal, 'circular mean'),
+              },
+              {
+                title: 'Std',
+                dataIndex: 'std',
+                render: (v: number | null, record: BaselineStatOut) =>
+                  v == null ? '-' : renderStatValue(v, record.signal, 'circular std'),
+              },
               { title: 'Median', dataIndex: 'median', render: (v: number | null) => v?.toFixed(3) ?? '-' },
             ]}
           />

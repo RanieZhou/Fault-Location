@@ -15,6 +15,15 @@ export async function getNetwork(networkId: string): Promise<NetworkOut> {
   return data
 }
 
+export async function listNetworks(): Promise<NetworkOut[]> {
+  const { data } = await apiClient.get<NetworkOut[]>('/networks')
+  return data
+}
+
+export async function deleteNetwork(networkId: string): Promise<void> {
+  await apiClient.delete(`/networks/${networkId}`)
+}
+
 export async function importMapping(
   networkId: string,
   file: File,

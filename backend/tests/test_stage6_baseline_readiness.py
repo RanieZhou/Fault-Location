@@ -175,3 +175,30 @@ def test_readiness_blocked_by_pending_unmatched_measurement(client: TestClient) 
     assert readiness["ready"] is False
     mapping_item = next(i for i in readiness["items"] if i["key"] == "measurement_mapping")
     assert mapping_item["passed"] is False
+
+
+def test_phase_baseline_uses_circular_mean_not_arithmetic_mean(client: TestClient) -> None:
+    network_id, _monitor_id = _fully_configure_network(client)
+
+    # 359 deg and 1 deg are 2 deg apart on the circle; the correct mean is
+    # ~0 deg. A plain arithmetic mean would wrongly give (359+1)/2 = 180 deg.
+    rows = [
+        _measurement_row("M-READY", 10.0, "2026-01-01 00:00:00", **{"A相电压相位": 359.0}),
+        _measurement_row("M-READY", 10.0, "2026-01-01 00:15:00", **{"A相电压相位": 1.0}),
+    ]
+    client.post(
+        f"/api/networks/{network_id}/measurements/import",
+        files={"file": ("prod.xlsx", _make_measurement_workbook(rows), XLSX_CONTENT_TYPE)},
+    )
+    build_resp = client.post(f"/api/networks/{network_id}/baseline/build")
+    assert build_resp.status_code == 200
+
+    baseline = client.get(f"/api/networks/{network_id}/baseline").json()
+    phase_stat = next(b for b in baseline if b["signal"] == "phase_Va")
+    assert phase_stat["count"] == 2
+    assert abs(phase_stat["mean"]) < 1e-6
+    assert abs(phase_stat["std"] - 1.0) < 0.01
+
+    # Magnitude signals must be completely unaffected by the phase-only branch.
+    va_stat = next(b for b in baseline if b["signal"] == "Va")
+    assert abs(va_stat["mean"] - 10.0) < 1e-9
